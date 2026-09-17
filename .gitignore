@@ -1,0 +1,31 @@
+# 小说素材、运行数据和临时产物
+/data/
+/tmp/
+/logs/
+*.log
+
+# 本地环境配置；示例配置可以纳入版本管理
+.env
+.env.*
+!.env.example
+!.env.*.example
+.venv/
+venv/
+
+# Python 缓存、测试与构建产物
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# 前端依赖与系统临时文件
+node_modules/
+.DS_Store
+Thumbs.db
