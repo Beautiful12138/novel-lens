@@ -29,3 +29,6 @@ dist/
 node_modules/
 .DS_Store
 Thumbs.db
+
+# 本地 IDE 配置
+/.idea/
