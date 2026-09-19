@@ -1,0 +1,403 @@
+{
+  "source_hex": "efbbbfe4b9a6e5908defbc9ae697a7e5a591e7baa6e585bce5aeb9e6a0b7e4be8b0d0ae6a087e9a298efbc9ae7aba0e4b8800d0ae38080e58e9fe69687f09f988020090d0ae69cabe6aeb50ae6a087e9a298efbc9ae7aba0e4ba8c0ae5b0bee5a3b0",
+  "tables": {
+    "asset_write_requests": [
+      {
+        "response": {
+          "result": {
+            "id": "d57f76fe-2966-4245-ae6c-2de48f4dd24b",
+            "name": "旧标签",
+            "aliases": [],
+            "full_name": "机制/旧标签",
+            "namespace": "机制",
+            "created_at": "2026-09-19T05:09:47.104630Z",
+            "description": "旧定义"
+          },
+          "status": "completed",
+          "replayed": false,
+          "operation": "tag_create",
+          "request_id": "0a1f412e-ec3c-472b-934d-7d094c90a377"
+        },
+        "request_id": "0a1f412e-ec3c-472b-934d-7d094c90a377",
+        "fingerprint": "b19baf89c79c7378c7ea53a9b6183c753a13ddb159924fb254044ff0bd0eacd5"
+      },
+      {
+        "response": {
+          "result": {
+            "id": "76fe3187-5672-4103-885d-2858c9afc417",
+            "note": "旧说明\n保留换行",
+            "tag_ids": [
+              "d57f76fe-2966-4245-ae6c-2de48f4dd24b"
+            ],
+            "version": 1,
+            "work_id": "afbee32d-32bb-4d15-b06a-9b693a613738",
+            "created_at": "2026-09-19T05:09:47.175038Z",
+            "updated_at": "2026-09-19T05:09:47.175038Z",
+            "source_ranges": [
+              {
+                "work_id": "afbee32d-32bb-4d15-b06a-9b693a613738",
+                "section_id": "0177df2b-36a3-4257-a6ef-4c1e0985c745",
+                "end_paragraph_id": "da635bf8-be0f-4399-a748-25e98f08818c",
+                "start_paragraph_id": "63694f89-2e35-4424-b52e-c8067d38c3dc"
+              },
+              {
+                "work_id": "afbee32d-32bb-4d15-b06a-9b693a613738",
+                "section_id": "f63e842c-a5c0-4c2a-a5fb-ba0978e361c9",
+                "end_paragraph_id": "a70d2cb8-d04d-4491-ac74-fc3e13e24eb5",
+                "start_paragraph_id": "a70d2cb8-d04d-4491-ac74-fc3e13e24eb5"
+              }
+            ]
+          },
+          "status": "completed",
+          "replayed": false,
+          "operation": "annotation_create",
+          "request_id": "b2f6a432-80a4-4fc1-99a7-fa65804a9511"
+        },
+        "request_id": "b2f6a432-80a4-4fc1-99a7-fa65804a9511",
+        "fingerprint": "114e656a7ae1efb99603b04372b9af3be7a26ad088d4d8ce8f2a2d6dc3dbd1f8"
+      },
+      {
+        "response": {
+          "result": {
+            "id": "5f0b4787-4a32-4d92-9408-c2010e700ea1",
+            "note": null,
+            "tag_ids": [],
+            "version": 1,
+            "work_id": "afbee32d-32bb-4d15-b06a-9b693a613738",
+            "created_at": "2026-09-19T05:09:47.397926Z",
+            "updated_at": "2026-09-19T05:09:47.397926Z",
+            "source_ranges": [
+              {
+                "work_id": "afbee32d-32bb-4d15-b06a-9b693a613738",
+                "section_id": "0177df2b-36a3-4257-a6ef-4c1e0985c745",
+                "end_paragraph_id": "da635bf8-be0f-4399-a748-25e98f08818c",
+                "start_paragraph_id": "63694f89-2e35-4424-b52e-c8067d38c3dc"
+              },
+              {
+                "work_id": "afbee32d-32bb-4d15-b06a-9b693a613738",
+                "section_id": "f63e842c-a5c0-4c2a-a5fb-ba0978e361c9",
+                "end_paragraph_id": "a70d2cb8-d04d-4491-ac74-fc3e13e24eb5",
+                "start_paragraph_id": "a70d2cb8-d04d-4491-ac74-fc3e13e24eb5"
+              }
+            ]
+          },
+          "status": "completed",
+          "replayed": false,
+          "operation": "annotation_create",
+          "request_id": "15e28a89-c7ca-4dbd-8bbc-ad7cec8f26ac"
+        },
+        "request_id": "15e28a89-c7ca-4dbd-8bbc-ad7cec8f26ac",
+        "fingerprint": "f34dce120b226fe92675f4931c25d863e4b0c9b48a9610a63409d4020286d60a"
+      },
+      {
+        "response": {
+          "result": {
+            "id": "76fe3187-5672-4103-885d-2858c9afc417",
+            "note": "旧修改",
+            "tag_ids": [],
+            "version": 2,
+            "work_id": "afbee32d-32bb-4d15-b06a-9b693a613738",
+            "created_at": "2026-09-19T05:09:47.175038Z",
+            "updated_at": "2026-09-19T05:09:47.680055Z",
+            "source_ranges": [
+              {
+                "work_id": "afbee32d-32bb-4d15-b06a-9b693a613738",
+                "section_id": "f63e842c-a5c0-4c2a-a5fb-ba0978e361c9",
+                "end_paragraph_id": "a70d2cb8-d04d-4491-ac74-fc3e13e24eb5",
+                "start_paragraph_id": "a70d2cb8-d04d-4491-ac74-fc3e13e24eb5"
+              }
+            ]
+          },
+          "status": "completed",
+          "replayed": false,
+          "operation": "annotation_update",
+          "request_id": "d53d8056-ed8c-40f6-b66c-4c7c7b209349"
+        },
+        "request_id": "d53d8056-ed8c-40f6-b66c-4c7c7b209349",
+        "fingerprint": "2333ea77d6246cc69d7d8ee71a695da8dbcf834f3d827755366b3b4ad3992529"
+      }
+    ],
+    "tags": [
+      {
+        "id": "d57f76fe-2966-4245-ae6c-2de48f4dd24b",
+        "name": "旧标签",
+        "aliases": [],
+        "namespace": "机制",
+        "created_at": "2026-09-19T05:09:47.10463+00:00",
+        "description": "旧定义"
+      }
+    ],
+    "works": [
+      {
+        "id": "afbee32d-32bb-4d15-b06a-9b693a613738",
+        "name": "旧契约兼容样例",
+        "created_at": "2026-09-19T05:09:46.804579+00:00",
+        "request_id": "b9b40901-5b6a-4952-bbe9-a269e7e4746d",
+        "fingerprint": "afc060334f0420bb9f8bc80c474964d1afa18cd3f9d0d574ae4a7b1b9009f2ba",
+        "source_bytes": 98,
+        "section_count": 2,
+        "source_sha256": "2e3d65e8fb0ca4b6837a32c32aff065d61fad4e9252fae558c845e1be4dad67a",
+        "character_count": 10,
+        "paragraph_count": 3
+      }
+    ],
+    "annotations": [
+      {
+        "id": "5f0b4787-4a32-4d92-9408-c2010e700ea1",
+        "note": null,
+        "version": 1,
+        "work_id": "afbee32d-32bb-4d15-b06a-9b693a613738",
+        "created_at": "2026-09-19T05:09:47.397926+00:00",
+        "updated_at": "2026-09-19T05:09:47.397926+00:00"
+      },
+      {
+        "id": "76fe3187-5672-4103-885d-2858c9afc417",
+        "note": "旧修改",
+        "version": 2,
+        "work_id": "afbee32d-32bb-4d15-b06a-9b693a613738",
+        "created_at": "2026-09-19T05:09:47.175038+00:00",
+        "updated_at": "2026-09-19T05:09:47.680055+00:00"
+      }
+    ],
+    "sections": [
+      {
+        "id": "0177df2b-36a3-4257-a6ef-4c1e0985c745",
+        "title": "章一",
+        "ordinal": 1,
+        "work_id": "afbee32d-32bb-4d15-b06a-9b693a613738",
+        "paragraph_count": 2
+      },
+      {
+        "id": "f63e842c-a5c0-4c2a-a5fb-ba0978e361c9",
+        "title": "章二",
+        "ordinal": 2,
+        "work_id": "afbee32d-32bb-4d15-b06a-9b693a613738",
+        "paragraph_count": 1
+      }
+    ],
+    "work_sources": [
+      {
+        "layout": {
+          "name": {
+            "line": 1,
+            "end_byte": 33,
+            "start_byte": 3
+          },
+          "sections": [
+            {
+              "line": 2,
+              "end_byte": 50,
+              "start_byte": 35
+            },
+            {
+              "line": 5,
+              "end_byte": 91,
+              "start_byte": 76
+            }
+          ]
+        },
+        "content": "\\xefbbbfe4b9a6e5908defbc9ae697a7e5a591e7baa6e585bce5aeb9e6a0b7e4be8b0d0ae6a087e9a298efbc9ae7aba0e4b8800d0ae38080e58e9fe69687f09f988020090d0ae69cabe6aeb50ae6a087e9a298efbc9ae7aba0e4ba8c0ae5b0bee5a3b0",
+        "work_id": "afbee32d-32bb-4d15-b06a-9b693a613738",
+        "rule_version": "txt-v1"
+      }
+    ],
+    "annotation_tags": [],
+    "paragraphs": [
+      {
+        "id": "63694f89-2e35-4424-b52e-c8067d38c3dc",
+        "text": "　原文😀 \t",
+        "ordinal": 1,
+        "section_id": "0177df2b-36a3-4257-a6ef-4c1e0985c745",
+        "source_position": {
+          "line": 3,
+          "end_byte": 67,
+          "start_byte": 52
+        }
+      },
+      {
+        "id": "da635bf8-be0f-4399-a748-25e98f08818c",
+        "text": "末段",
+        "ordinal": 2,
+        "section_id": "0177df2b-36a3-4257-a6ef-4c1e0985c745",
+        "source_position": {
+          "line": 4,
+          "end_byte": 75,
+          "start_byte": 69
+        }
+      },
+      {
+        "id": "a70d2cb8-d04d-4491-ac74-fc3e13e24eb5",
+        "text": "尾声",
+        "ordinal": 1,
+        "section_id": "f63e842c-a5c0-4c2a-a5fb-ba0978e361c9",
+        "source_position": {
+          "line": 6,
+          "end_byte": 98,
+          "start_byte": 92
+        }
+      }
+    ],
+    "annotation_ranges": [
+      {
+        "ordinal": 1,
+        "work_id": "afbee32d-32bb-4d15-b06a-9b693a613738",
+        "section_id": "0177df2b-36a3-4257-a6ef-4c1e0985c745",
+        "annotation_id": "5f0b4787-4a32-4d92-9408-c2010e700ea1",
+        "end_paragraph_id": "da635bf8-be0f-4399-a748-25e98f08818c",
+        "start_paragraph_id": "63694f89-2e35-4424-b52e-c8067d38c3dc"
+      },
+      {
+        "ordinal": 2,
+        "work_id": "afbee32d-32bb-4d15-b06a-9b693a613738",
+        "section_id": "f63e842c-a5c0-4c2a-a5fb-ba0978e361c9",
+        "annotation_id": "5f0b4787-4a32-4d92-9408-c2010e700ea1",
+        "end_paragraph_id": "a70d2cb8-d04d-4491-ac74-fc3e13e24eb5",
+        "start_paragraph_id": "a70d2cb8-d04d-4491-ac74-fc3e13e24eb5"
+      },
+      {
+        "ordinal": 1,
+        "work_id": "afbee32d-32bb-4d15-b06a-9b693a613738",
+        "section_id": "f63e842c-a5c0-4c2a-a5fb-ba0978e361c9",
+        "annotation_id": "76fe3187-5672-4103-885d-2858c9afc417",
+        "end_paragraph_id": "a70d2cb8-d04d-4491-ac74-fc3e13e24eb5",
+        "start_paragraph_id": "a70d2cb8-d04d-4491-ac74-fc3e13e24eb5"
+      }
+    ]
+  },
+  "query": {
+    "limit": 1,
+    "cursor": null,
+    "work_id": "afbee32d-32bb-4d15-b06a-9b693a613738",
+    "source_range": null,
+    "tag_ids": []
+  },
+  "cursor": "WyJBbm5vdGF0aW9uTGlzdDozM2Y4NmQ4NDg2MGUwZjAyODYzMWQ0OTNjNDBiNjQwZmVkYjkyNjFkZGYxNzBhNjNkYWQxZGE1OWZkMTIwZTYxIiwiMjAyNi0wOS0xOVQwNTowOTo0Ny4xNzUwMzgrMDA6MDB8NzZmZTMxODctNTY3Mi00MTAzLTg4NWQtMjg1OGM5YWZjNDE3Il0=",
+  "next_id": "5f0b4787-4a32-4d92-9408-c2010e700ea1",
+  "annotation_id": "76fe3187-5672-4103-885d-2858c9afc417",
+  "requests": [
+    {
+      "operation": "tag_create",
+      "input": {
+        "request_id": "0a1f412e-ec3c-472b-934d-7d094c90a377",
+        "namespace": "机制",
+        "name": "旧标签",
+        "description": "旧定义",
+        "aliases": []
+      },
+      "response": {
+        "request_id": "0a1f412e-ec3c-472b-934d-7d094c90a377",
+        "operation": "tag_create",
+        "status": "completed",
+        "replayed": false,
+        "result": {
+          "id": "d57f76fe-2966-4245-ae6c-2de48f4dd24b",
+          "namespace": "机制",
+          "name": "旧标签",
+          "full_name": "机制/旧标签",
+          "description": "旧定义",
+          "aliases": [],
+          "created_at": "2026-09-19T05:09:47.104630Z"
+        }
+      }
+    },
+    {
+      "operation": "annotation_create",
+      "input": {
+        "request_id": "b2f6a432-80a4-4fc1-99a7-fa65804a9511",
+        "work_id": "afbee32d-32bb-4d15-b06a-9b693a613738",
+        "source_ranges": [
+          {
+            "work_id": "afbee32d-32bb-4d15-b06a-9b693a613738",
+            "section_id": "0177df2b-36a3-4257-a6ef-4c1e0985c745",
+            "start_paragraph_id": "63694f89-2e35-4424-b52e-c8067d38c3dc",
+            "end_paragraph_id": "da635bf8-be0f-4399-a748-25e98f08818c"
+          },
+          {
+            "work_id": "afbee32d-32bb-4d15-b06a-9b693a613738",
+            "section_id": "f63e842c-a5c0-4c2a-a5fb-ba0978e361c9",
+            "start_paragraph_id": "a70d2cb8-d04d-4491-ac74-fc3e13e24eb5",
+            "end_paragraph_id": "a70d2cb8-d04d-4491-ac74-fc3e13e24eb5"
+          }
+        ],
+        "tag_ids": [
+          "d57f76fe-2966-4245-ae6c-2de48f4dd24b"
+        ],
+        "note": "旧说明\n保留换行"
+      },
+      "response": {
+        "request_id": "b2f6a432-80a4-4fc1-99a7-fa65804a9511",
+        "operation": "annotation_create",
+        "status": "completed",
+        "replayed": false,
+        "result": {
+          "id": "76fe3187-5672-4103-885d-2858c9afc417",
+          "work_id": "afbee32d-32bb-4d15-b06a-9b693a613738",
+          "source_ranges": [
+            {
+              "work_id": "afbee32d-32bb-4d15-b06a-9b693a613738",
+              "section_id": "0177df2b-36a3-4257-a6ef-4c1e0985c745",
+              "start_paragraph_id": "63694f89-2e35-4424-b52e-c8067d38c3dc",
+              "end_paragraph_id": "da635bf8-be0f-4399-a748-25e98f08818c"
+            },
+            {
+              "work_id": "afbee32d-32bb-4d15-b06a-9b693a613738",
+              "section_id": "f63e842c-a5c0-4c2a-a5fb-ba0978e361c9",
+              "start_paragraph_id": "a70d2cb8-d04d-4491-ac74-fc3e13e24eb5",
+              "end_paragraph_id": "a70d2cb8-d04d-4491-ac74-fc3e13e24eb5"
+            }
+          ],
+          "tag_ids": [
+            "d57f76fe-2966-4245-ae6c-2de48f4dd24b"
+          ],
+          "note": "旧说明\n保留换行",
+          "version": 1,
+          "created_at": "2026-09-19T05:09:47.175038Z",
+          "updated_at": "2026-09-19T05:09:47.175038Z"
+        }
+      }
+    },
+    {
+      "operation": "annotation_update",
+      "input": {
+        "request_id": "d53d8056-ed8c-40f6-b66c-4c7c7b209349",
+        "work_id": "afbee32d-32bb-4d15-b06a-9b693a613738",
+        "source_ranges": [
+          {
+            "work_id": "afbee32d-32bb-4d15-b06a-9b693a613738",
+            "section_id": "f63e842c-a5c0-4c2a-a5fb-ba0978e361c9",
+            "start_paragraph_id": "a70d2cb8-d04d-4491-ac74-fc3e13e24eb5",
+            "end_paragraph_id": "a70d2cb8-d04d-4491-ac74-fc3e13e24eb5"
+          }
+        ],
+        "tag_ids": [],
+        "note": "旧修改",
+        "annotation_id": "76fe3187-5672-4103-885d-2858c9afc417",
+        "expected_version": 1
+      },
+      "response": {
+        "request_id": "d53d8056-ed8c-40f6-b66c-4c7c7b209349",
+        "operation": "annotation_update",
+        "status": "completed",
+        "replayed": false,
+        "result": {
+          "id": "76fe3187-5672-4103-885d-2858c9afc417",
+          "work_id": "afbee32d-32bb-4d15-b06a-9b693a613738",
+          "source_ranges": [
+            {
+              "work_id": "afbee32d-32bb-4d15-b06a-9b693a613738",
+              "section_id": "f63e842c-a5c0-4c2a-a5fb-ba0978e361c9",
+              "start_paragraph_id": "a70d2cb8-d04d-4491-ac74-fc3e13e24eb5",
+              "end_paragraph_id": "a70d2cb8-d04d-4491-ac74-fc3e13e24eb5"
+            }
+          ],
+          "tag_ids": [],
+          "note": "旧修改",
+          "version": 2,
+          "created_at": "2026-09-19T05:09:47.175038Z",
+          "updated_at": "2026-09-19T05:09:47.680055Z"
+        }
+      }
+    }
+  ],
+  "generated_from_commit": "b060c4dc8a78045b3b4931b421a3783621eacbc3"
+}

@@ -16,7 +16,7 @@ NovelLens 本地应用进程（默认 127.0.0.1:8000）
 ├─ /mcp：AI 客户端连接的 Streamable HTTP 端点
 │   └─ 文件工具按路径读取任意目录中有权限访问的普通文件
 └─ 共用 ImportService / ReadingService 和数据库连接池
-    └─ 本地 PostgreSQL（可使用现有 WSL Docker 实例）
+    └─ 远程 PostgreSQL（公网直连，密码认证，关闭 TLS）
 ```
 
 应用与小说文件位于同一主机，文件路径以应用进程看到的文件系统为准；Windows 和 WSL 路径不能直接互换。应用启动一次即可提供两类接口，MCP 不启动第二个业务进程，也不在内部通过 HTTP 请求现有 REST 路由。数据库继续作为独立基础设施运行，“一个服务进程”不表示把 PostgreSQL 嵌入 Python 进程。
@@ -136,7 +136,7 @@ request_id 由调用方在正式导入前生成并保存；MCP 不偷偷生成�
 
 | 编号 | 可观察行为与验证 |
 | --- | --- |
-| M1 | 只启动一个真实 NovelLens 应用进程，/health、现有 REST 路由和 /mcp 在同一端口可用；官方 Streamable HTTP 客户端完成协商、发现本规格九个原文工具并按 schema 调用；Spec 04 另增加九个资产工具 |
+| M1 | 只启动一个真实 NovelLens 应用进程，/health、现有 REST 路由和 /mcp 在同一端口可用；官方 Streamable HTTP 客户端完成协商、发现本规格九个原文工具并按 schema 调用；Spec 04 增加九个资产工具，Spec 05 增加十一个实体与关系工具 |
 | M2 | 以隔离目录中的中文路径小样例完成预检、导入、目录、段落、范围和上下文读取；BOM、换行、空白及字节坐标与 Spec 02 一致 |
 | M3 | 真正访问 PostgreSQL，REST 导入后 MCP 可读取、MCP 导入后 REST 可查询和下载同一原文；跨入口重放返回原 UUID，同键异内容、异键同名及跨作品 / Section 引用不能绕过现有规则 |
 | M4 | 应用进程重启后可查询原请求和读取原坐标；忽略首次导入响应后仍可用持久化请求键恢复，不重复创建作品 |

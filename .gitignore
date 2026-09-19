@@ -1,10 +1,12 @@
 # 小说素材、运行数据和临时产物
 /data/
+/docs/data/
 /tmp/
 /logs/
 *.log
 
 # 本地环境配置；示例配置可以纳入版本管理
+/docs/本地环境.local.md
 .env
 .env.*
 !.env.example

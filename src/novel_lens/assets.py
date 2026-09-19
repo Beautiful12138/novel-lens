@@ -21,26 +21,49 @@ from novel_lens.asset_contracts import (
     AnnotationSummary,
     AnnotationUpdate,
     AssetWriteOut,
+    EntityCreate,
+    EntityGet,
+    EntityList,
+    EntityOut,
+    EntitySearch,
+    EntityUpdate,
+    RelationCreate,
+    RelationExpand,
+    RelationGet,
+    RelationNodeOut,
+    RelationNodePage,
+    RelationOut,
+    RelationSearch,
+    RelationSetStatus,
+    RelationSnapshot,
+    RelationSummary,
+    RelationUpdate,
     TagCreate,
     TagList,
     TagOut,
     TagSearch,
 )
 from novel_lens.contracts import ListRequest, Page, SourceRange
-from novel_lens.cursors import decode_cursor, encode_cursor
+from novel_lens.cursors import decode_cursor, encode_cursor, ordinal_cursor
 from novel_lens.database import Database
 from novel_lens.errors import ServiceError
 from novel_lens.reading import paragraph_at, section_at, work_at
+from novel_lens.schema import (
+    annotation_entities,
+    annotations,
+    entities,
+    paragraphs,
+    relation_entities,
+    relation_nodes,
+    relation_tags,
+    relations,
+    tags,
+)
 from novel_lens.schema import (
     annotation_ranges as ranges,
 )
 from novel_lens.schema import (
     annotation_tags as links,
-)
-from novel_lens.schema import (
-    annotations,
-    paragraphs,
-    tags,
 )
 from novel_lens.schema import (
     asset_write_requests as requests,
@@ -75,6 +98,94 @@ def tag_out(row: RowMapping) -> TagOut:
     return TagOut.model_validate(dict(row) | {"full_name": f"{row['namespace']}/{row['name']}"})
 
 
+def require_entities(connection: Connection, work_id: UUID, ids: list[UUID]) -> None:
+    """实体不可跨作品；名称相同不影响按稳定 ID 校验归属。"""
+    if ids and len(
+        connection.execute(
+            select(entities.c.id).where(entities.c.work_id == work_id, entities.c.id.in_(ids))
+        ).all()
+    ) != len(ids):
+        raise ServiceError("ENTITY_NOT_FOUND", "指定作品中不存在引用的实体", 404)
+
+
+def related_ids(
+    connection: Connection, table: Table, owner: str, key: str, identifier: UUID
+) -> list[UUID]:
+    """在调用方事务内读取有序的关联集合。"""
+    return list(
+        connection.execute(
+            select(table.c[key]).where(table.c[owner] == identifier).order_by(table.c[key])
+        ).scalars()
+    )
+
+
+def scoped_row(
+    connection: Connection,
+    table: Table,
+    work_id: UUID,
+    identifier: UUID,
+    code: str,
+    *,
+    lock: bool = False,
+) -> RowMapping:
+    """读取同作品对象；写操作先锁主记录，使内容和关联修改共享版本竞争。"""
+    query = select(table).where(table.c.work_id == work_id, table.c.id == identifier)
+    if lock:
+        query = query.with_for_update()
+    row = connection.execute(query).mappings().first()
+    if row is None:
+        raise ServiceError(code, "指定作品中不存在该对象", 404)
+    return row
+
+
+def check_version(row: RowMapping, expected: int) -> None:
+    if row["version"] != expected:
+        raise ServiceError(
+            "VERSION_CONFLICT", "对象已被修改，请重新读取", 409, {"current_version": row["version"]}
+        )
+
+
+def literal_pattern(query: str) -> str:
+    """只把用户输入作为字面子串，转义 SQL LIKE 模式字符。"""
+    return "%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+
+
+def node_out(row: RowMapping) -> RelationNodeOut:
+    return RelationNodeOut(
+        ordinal=row["ordinal"],
+        role=row["role"],
+        source_range=SourceRange(**{key: row[key] for key in SourceRange.model_fields}),
+    )
+
+
+def relation_out(connection: Connection, row: RowMapping) -> RelationOut:
+    """调用方须持有关系写锁或同一读取快照；不加载节点正文或节点列表。"""
+    return RelationOut.model_validate(
+        dict(row)
+        | {
+            "tag_ids": related_ids(connection, relation_tags, "relation_id", "tag_id", row["id"]),
+            "entity_ids": related_ids(
+                connection, relation_entities, "relation_id", "entity_id", row["id"]
+            ),
+            "node_count": connection.execute(
+                select(func.count()).where(relation_nodes.c.relation_id == row["id"])
+            ).scalar_one(),
+        }
+    )
+
+
+def relation_snapshot(connection: Connection, row: RowMapping) -> RelationSnapshot:
+    """写事务中保存全部节点，后续重放无需查询可能已变更的当前关系。"""
+    nodes = connection.execute(
+        select(relation_nodes)
+        .where(relation_nodes.c.relation_id == row["id"])
+        .order_by(relation_nodes.c.ordinal)
+    ).mappings()
+    return RelationSnapshot(
+        **relation_out(connection, row).model_dump(), nodes=[node_out(node) for node in nodes]
+    )
+
+
 def annotation_out(connection: Connection, row: RowMapping) -> AnnotationOut:
     """调用方须提供事务快照或持有该标注的写锁，避免拼接不同版本的关联。"""
     references = (
@@ -101,7 +212,14 @@ def annotation_out(connection: Connection, row: RowMapping) -> AnnotationOut:
         .all()
     )
     return AnnotationOut.model_validate(
-        dict(row) | {"source_ranges": [dict(r) for r in references], "tag_ids": ids}
+        dict(row)
+        | {
+            "source_ranges": [dict(r) for r in references],
+            "tag_ids": ids,
+            "entity_ids": related_ids(
+                connection, annotation_entities, "annotation_id", "entity_id", row["id"]
+            ),
+        }
     )
 
 
@@ -113,6 +231,9 @@ def page_rows(
 ) -> tuple[list[RowMapping], str | None]:
     """创建顺序游标绑定查询类型和全部过滤条件，分页大小不属于过滤条件。"""
     filters = request.model_dump(mode="json", exclude={"limit", "cursor"})
+    # 空实体过滤保留 0002 游标摘要，非空过滤必须参与范围绑定。
+    if isinstance(request, AnnotationList) and not request.entity_ids:
+        filters.pop("entity_ids")
     scope = type(request).__name__ + ":" + sha256(compact(filters).encode()).hexdigest()
     after = decode_cursor(request.cursor, scope)
     if after is not None:
@@ -147,21 +268,34 @@ class AssetService:
 
     def _write(
         self,
-        request: TagCreate | AnnotationCreate,
+        request: TagCreate | AnnotationCreate | EntityCreate | RelationCreate | RelationSetStatus,
         operation: str,
-        action: Callable[[Connection], TagOut | AnnotationOut],
+        action: Callable[[Connection], TagOut | AnnotationOut | EntityOut | RelationSnapshot],
     ) -> AssetWriteOut:
         """唯一请求键先参与事务竞争，再执行业务，避免同键修改被误判为版本冲突。
 
         占键行只在当前事务内存在，提交前填入完整快照；任何异常均回滚占键与全部业务写入。
         PostgreSQL 的 ON CONFLICT 等待竞争事务结束；失败事务不消耗请求键。
         """
+        inputs = request.model_dump(mode="json", exclude={"request_id"})
+        contract = "asset-v2"
+        if isinstance(request, TagCreate):
+            contract = "asset-v1"
+        elif isinstance(request, AnnotationCreate):
+            legacy = (
+                "entity_ids" not in request.model_fields_set
+                if isinstance(request, AnnotationUpdate)
+                else not request.entity_ids
+            )
+            if legacy:
+                inputs.pop("entity_ids")
+                contract = "asset-v1"
         fingerprint = sha256(
             compact(
                 {
-                    "contract": "asset-v1",
+                    "contract": contract,
                     "operation": operation,
-                    "input": request.model_dump(mode="json", exclude={"request_id"}),
+                    "input": inputs,
                 }
             ).encode()
         ).hexdigest()
@@ -300,11 +434,28 @@ class AssetService:
                 ],
             )
 
+        # 旧修改不认识 entity_ids；省略时必须保留当前关联，显式 [] 才清空。
+        if not isinstance(request, AnnotationUpdate) or "entity_ids" in request.model_fields_set:
+            connection.execute(
+                annotation_entities.delete().where(
+                    annotation_entities.c.annotation_id == annotation_id
+                )
+            )
+            if request.entity_ids:
+                connection.execute(
+                    annotation_entities.insert(),
+                    [
+                        {"annotation_id": annotation_id, "entity_id": identifier}
+                        for identifier in request.entity_ids
+                    ],
+                )
+
     def _validate_references(self, connection: Connection, request: AnnotationCreate) -> None:
         work_at(connection, request.work_id)
         for value in request.source_ranges:
             range_bounds(connection, request.work_id, value)
         require_tags(connection, request.tag_ids)
+        require_entities(connection, request.work_id, request.entity_ids)
 
     def create_annotation(self, request: AnnotationCreate) -> AssetWriteOut:
         def action(connection: Connection) -> AnnotationOut:
@@ -370,7 +521,7 @@ class AssetService:
         return self._write(request, "annotation_update", action)
 
     def get_annotation(self, request: AnnotationGet) -> AnnotationOut:
-        # 三组读取必须属于同一快照；READ COMMITTED 的逐语句快照会混入新版本关联。
+        # 主记录及全部关联须属于同一快照，避免逐语句快照混入新版本关联。
         with (
             self.database.engine.connect().execution_options(
                 isolation_level="REPEATABLE READ"
@@ -417,6 +568,11 @@ class AssetService:
         tag_count = (
             select(func.count()).where(links.c.annotation_id == annotations.c.id).scalar_subquery()
         )
+        entity_count = (
+            select(func.count())
+            .where(annotation_entities.c.annotation_id == annotations.c.id)
+            .scalar_subquery()
+        )
         query = select(
             annotations.c.id,
             annotations.c.work_id,
@@ -426,6 +582,7 @@ class AssetService:
             first_range.label("first_source_range"),
             range_count.label("source_range_count"),
             tag_count.label("tag_count"),
+            entity_count.label("entity_count"),
             func.substr(annotations.c.note, 1, 200).label("note_preview"),
             func.coalesce(func.length(annotations.c.note) > 200, False).label("note_truncated"),
         ).where(annotations.c.work_id == request.work_id)
@@ -437,6 +594,16 @@ class AssetService:
         ):
             work_at(connection, request.work_id)
             require_tags(connection, request.tag_ids)
+            require_entities(connection, request.work_id, request.entity_ids)
+            if request.entity_ids:
+                query = query.where(
+                    annotations.c.id.in_(
+                        select(annotation_entities.c.annotation_id)
+                        .where(annotation_entities.c.entity_id.in_(request.entity_ids))
+                        .group_by(annotation_entities.c.annotation_id)
+                        .having(func.count() == len(request.entity_ids))
+                    )
+                )
             if request.tag_ids:
                 query = query.where(
                     annotations.c.id.in_(
@@ -466,4 +633,389 @@ class AssetService:
             rows, cursor = page_rows(connection, annotations, query, request)
             return Page(
                 items=[AnnotationSummary.model_validate(row) for row in rows], next_cursor=cursor
+            )
+
+    def create_entity(self, request: EntityCreate) -> AssetWriteOut:
+        """创建独立身份；同名允许并存，重复请求由资产请求键处理。"""
+
+        def action(connection: Connection) -> EntityOut:
+            work_at(connection, request.work_id)
+            row = (
+                connection.execute(
+                    entities.insert()
+                    .values(id=uuid4(), version=1, **request.model_dump(exclude={"request_id"}))
+                    .returning(entities)
+                )
+                .mappings()
+                .one()
+            )
+            return EntityOut.model_validate(row)
+
+        return self._write(request, "entity_create", action)
+
+    def update_entity(self, request: EntityUpdate) -> AssetWriteOut:
+        """修改身份描述而不改动关联资产版本；身份 ID 和作品归属保持不变。"""
+
+        def action(connection: Connection) -> EntityOut:
+            old = scoped_row(
+                connection,
+                entities,
+                request.work_id,
+                request.entity_id,
+                "ENTITY_NOT_FOUND",
+                lock=True,
+            )
+            check_version(old, request.expected_version)
+            row = (
+                connection.execute(
+                    entities.update()
+                    .where(entities.c.id == request.entity_id)
+                    .values(
+                        type=request.type,
+                        canonical_name=request.canonical_name,
+                        aliases=request.aliases,
+                        note=request.note,
+                        version=old["version"] + 1,
+                        updated_at=func.clock_timestamp(),
+                    )
+                    .returning(entities)
+                )
+                .mappings()
+                .one()
+            )
+            return EntityOut.model_validate(row)
+
+        return self._write(request, "entity_update", action)
+
+    def get_entity(self, request: EntityGet) -> EntityOut:
+        with self.database.engine.connect() as connection:
+            return EntityOut.model_validate(
+                scoped_row(
+                    connection, entities, request.work_id, request.entity_id, "ENTITY_NOT_FOUND"
+                )
+            )
+
+    def list_entities(self, request: EntityList) -> Page[EntityOut]:
+        """按作品、类型及可选字面查询列出全部身份候选，不按名称自动消歧。"""
+        query = select(entities).where(entities.c.work_id == request.work_id)
+        if request.type is not None:
+            query = query.where(entities.c.type == request.type)
+        if isinstance(request, EntitySearch):
+            pattern = literal_pattern(request.query)
+            aliases = (
+                func.jsonb_array_elements_text(entities.c.aliases)
+                .table_valued("value")
+                .render_derived(name="entity_aliases")
+            )
+            alias_match = (
+                select(literal(1))
+                .select_from(aliases)
+                .where(aliases.c.value.ilike(pattern, escape="\\"))
+                .correlate(entities)
+                .exists()
+            )
+            query = query.where(
+                or_(
+                    entities.c.canonical_name.ilike(pattern, escape="\\"),
+                    entities.c.note.ilike(pattern, escape="\\"),
+                    alias_match,
+                )
+            )
+        with (
+            self.database.engine.connect().execution_options(
+                isolation_level="REPEATABLE READ"
+            ) as connection,
+            connection.begin(),
+        ):
+            work_at(connection, request.work_id)
+            rows, cursor = page_rows(connection, entities, query, request)
+            return Page(items=[EntityOut.model_validate(row) for row in rows], next_cursor=cursor)
+
+    def _validate_relation(self, connection: Connection, request: RelationCreate) -> None:
+        """事务内校验不可变原文归属和实体身份；不判断文学关系是否成立。"""
+        work_at(connection, request.work_id)
+        for node in request.nodes:
+            range_bounds(connection, request.work_id, node.source_range)
+        require_tags(connection, request.tag_ids)
+        require_entities(connection, request.work_id, request.entity_ids)
+
+    def _save_relation_references(
+        self, connection: Connection, identifier: UUID, request: RelationCreate
+    ) -> None:
+        """主记录持锁期间原子替换有序节点和集合；任一写入失败整体回滚。"""
+        for table in (relation_nodes, relation_tags, relation_entities):
+            connection.execute(table.delete().where(table.c.relation_id == identifier))
+        connection.execute(
+            relation_nodes.insert(),
+            [
+                dict(
+                    node.source_range.model_dump(),
+                    relation_id=identifier,
+                    ordinal=index,
+                    role=node.role,
+                )
+                for index, node in enumerate(request.nodes, 1)
+            ],
+        )
+        if request.tag_ids:
+            connection.execute(
+                relation_tags.insert(),
+                [{"relation_id": identifier, "tag_id": key} for key in request.tag_ids],
+            )
+        if request.entity_ids:
+            connection.execute(
+                relation_entities.insert(),
+                [{"relation_id": identifier, "entity_id": key} for key in request.entity_ids],
+            )
+
+    def create_relation(self, request: RelationCreate) -> AssetWriteOut:
+        """直接连接原文；创建时有效，是否具有文学依据由调用方负责。"""
+
+        def action(connection: Connection) -> RelationSnapshot:
+            self._validate_relation(connection, request)
+            row = (
+                connection.execute(
+                    relations.insert()
+                    .values(
+                        id=uuid4(),
+                        work_id=request.work_id,
+                        title=request.title,
+                        relation_type=request.relation_type,
+                        note=request.note,
+                        status="active",
+                        version=1,
+                    )
+                    .returning(relations)
+                )
+                .mappings()
+                .one()
+            )
+            self._save_relation_references(connection, row["id"], request)
+            return relation_snapshot(connection, row)
+
+        return self._write(request, "relation_create", action)
+
+    def update_relation(self, request: RelationUpdate) -> AssetWriteOut:
+        """完整替换内容及关联，保留现有撤回状态；与状态写入竞争同一版本。"""
+
+        def action(connection: Connection) -> RelationSnapshot:
+            old = scoped_row(
+                connection,
+                relations,
+                request.work_id,
+                request.relation_id,
+                "RELATION_NOT_FOUND",
+                lock=True,
+            )
+            check_version(old, request.expected_version)
+            self._validate_relation(connection, request)
+            row = (
+                connection.execute(
+                    relations.update()
+                    .where(relations.c.id == request.relation_id)
+                    .values(
+                        title=request.title,
+                        relation_type=request.relation_type,
+                        note=request.note,
+                        version=old["version"] + 1,
+                        updated_at=func.clock_timestamp(),
+                    )
+                    .returning(relations)
+                )
+                .mappings()
+                .one()
+            )
+            self._save_relation_references(connection, row["id"], request)
+            return relation_snapshot(connection, row)
+
+        return self._write(request, "relation_update", action)
+
+    def set_relation_status(self, request: RelationSetStatus) -> AssetWriteOut:
+        """撤回或恢复保留全部证据；新请求增加版本，重放返回原始状态快照。"""
+
+        def action(connection: Connection) -> RelationSnapshot:
+            old = scoped_row(
+                connection,
+                relations,
+                request.work_id,
+                request.relation_id,
+                "RELATION_NOT_FOUND",
+                lock=True,
+            )
+            check_version(old, request.expected_version)
+            row = (
+                connection.execute(
+                    relations.update()
+                    .where(relations.c.id == request.relation_id)
+                    .values(
+                        status=request.status,
+                        version=old["version"] + 1,
+                        updated_at=func.clock_timestamp(),
+                    )
+                    .returning(relations)
+                )
+                .mappings()
+                .one()
+            )
+            return relation_snapshot(connection, row)
+
+        return self._write(request, "relation_set_status", action)
+
+    def get_relation(self, request: RelationGet) -> RelationOut:
+        """按 ID 可读取已撤回对象；同一快照返回说明、关联及节点计数。"""
+        with (
+            self.database.engine.connect().execution_options(
+                isolation_level="REPEATABLE READ"
+            ) as connection,
+            connection.begin(),
+        ):
+            row = scoped_row(
+                connection, relations, request.work_id, request.relation_id, "RELATION_NOT_FOUND"
+            )
+            return relation_out(connection, row)
+
+    def expand_relation(self, request: RelationExpand) -> RelationNodePage:
+        """节点概览绑定当前版本；发生修改时拒绝继续拼接跨版本节点。"""
+        scope = f"RelationExpand:{request.work_id}:{request.relation_id}:{request.expected_version}"
+        # 先拒绝串用游标，再检查当前版本；旧游标配原版本应返回 VERSION_CONFLICT。
+        decode_cursor(request.cursor, scope)
+        with (
+            self.database.engine.connect().execution_options(
+                isolation_level="REPEATABLE READ"
+            ) as connection,
+            connection.begin(),
+        ):
+            row = scoped_row(
+                connection, relations, request.work_id, request.relation_id, "RELATION_NOT_FOUND"
+            )
+            check_version(row, request.expected_version)
+            count = connection.execute(
+                select(func.count()).where(relation_nodes.c.relation_id == request.relation_id)
+            ).scalar_one()
+            after = ordinal_cursor(request.cursor, scope, count)
+            nodes = list(
+                connection.execute(
+                    select(relation_nodes)
+                    .where(
+                        relation_nodes.c.relation_id == request.relation_id,
+                        relation_nodes.c.ordinal > after,
+                    )
+                    .order_by(relation_nodes.c.ordinal)
+                    .limit(request.limit + 1)
+                ).mappings()
+            )
+            cursor = (
+                encode_cursor(scope, str(nodes[request.limit - 1]["ordinal"]))
+                if len(nodes) > request.limit
+                else None
+            )
+            return RelationNodePage(
+                work_id=request.work_id,
+                relation_id=request.relation_id,
+                version=row["version"],
+                status=row["status"],
+                items=[node_out(n) for n in nodes[: request.limit]],
+                next_cursor=cursor,
+            )
+
+    def search_relations(self, request: RelationSearch) -> Page[RelationSummary]:
+        """数据库中筛选并投影摘要；每条关系只出现一次，默认排除已撤回对象。"""
+        nodes = relation_nodes
+        first_range = (
+            select(
+                func.jsonb_build_object(
+                    "work_id",
+                    nodes.c.work_id,
+                    "section_id",
+                    nodes.c.section_id,
+                    "start_paragraph_id",
+                    nodes.c.start_paragraph_id,
+                    "end_paragraph_id",
+                    nodes.c.end_paragraph_id,
+                )
+            )
+            .where(nodes.c.relation_id == relations.c.id)
+            .order_by(nodes.c.ordinal)
+            .limit(1)
+            .scalar_subquery()
+        )
+        counts = [
+            select(func.count())
+            .where(table.c.relation_id == relations.c.id)
+            .scalar_subquery()
+            .label(label)
+            for table, label in (
+                (nodes, "node_count"),
+                (relation_tags, "tag_count"),
+                (relation_entities, "entity_count"),
+            )
+        ]
+        query = select(
+            relations.c.id,
+            relations.c.work_id,
+            relations.c.title,
+            relations.c.relation_type,
+            relations.c.status,
+            relations.c.version,
+            relations.c.created_at,
+            relations.c.updated_at,
+            first_range.label("first_source_range"),
+            *counts,
+            func.substr(relations.c.note, 1, 200).label("note_preview"),
+            (func.length(relations.c.note) > 200).label("note_truncated"),
+        ).where(relations.c.work_id == request.work_id)
+        if request.status is not None:
+            query = query.where(relations.c.status == request.status)
+        if request.relation_type is not None:
+            query = query.where(relations.c.relation_type == request.relation_type)
+        if request.query is not None:
+            pattern = literal_pattern(request.query)
+            query = query.where(
+                or_(
+                    relations.c.title.ilike(pattern, escape="\\"),
+                    relations.c.note.ilike(pattern, escape="\\"),
+                )
+            )
+        with (
+            self.database.engine.connect().execution_options(
+                isolation_level="REPEATABLE READ"
+            ) as connection,
+            connection.begin(),
+        ):
+            work_at(connection, request.work_id)
+            require_tags(connection, request.tag_ids)
+            require_entities(connection, request.work_id, request.entity_ids)
+            for table, field, ids in (
+                (relation_tags, "tag_id", request.tag_ids),
+                (relation_entities, "entity_id", request.entity_ids),
+            ):
+                if ids:
+                    query = query.where(
+                        relations.c.id.in_(
+                            select(table.c.relation_id)
+                            .where(table.c[field].in_(ids))
+                            .group_by(table.c.relation_id)
+                            .having(func.count() == len(ids))
+                        )
+                    )
+            if request.source_range is not None:
+                first, last = range_bounds(connection, request.work_id, request.source_range)
+                start, end = paragraphs.alias("start"), paragraphs.alias("end")
+                overlap = (
+                    select(nodes.c.relation_id)
+                    .select_from(
+                        nodes.join(start, nodes.c.start_paragraph_id == start.c.id).join(
+                            end, nodes.c.end_paragraph_id == end.c.id
+                        )
+                    )
+                    .where(
+                        nodes.c.section_id == request.source_range.section_id,
+                        start.c.ordinal <= last,
+                        end.c.ordinal >= first,
+                    )
+                )
+                query = query.where(relations.c.id.in_(overlap))
+            rows, cursor = page_rows(connection, relations, query, request)
+            return Page(
+                items=[RelationSummary.model_validate(row) for row in rows], next_cursor=cursor
             )

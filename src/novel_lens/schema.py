@@ -165,3 +165,92 @@ asset_write_requests = Table(
     ),
     comment="资产写入的共享请求键与结果；同键并发由唯一约束串行裁决",
 )
+
+entities = Table(
+    "entities",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    Column("work_id", Uuid, ForeignKey("works.id"), nullable=False),
+    Column("type", String(32), nullable=False),
+    Column("canonical_name", String(256), nullable=False),
+    Column("aliases", JSONB, nullable=False),
+    Column("note", Text),
+    Column("version", Integer, nullable=False),
+    Column("created_at", DateTime(timezone=True), server_default=func.now(), nullable=False),
+    Column("updated_at", DateTime(timezone=True), server_default=func.now(), nullable=False),
+    CheckConstraint("version > 0", name="ck_entities_version"),
+    CheckConstraint(
+        "type IN ('character', 'location', 'item', 'organization', 'concept')",
+        name="ck_entities_type",
+    ),
+    comment="作品内稳定身份；名称和别名允许重复，关联保存 ID 而非名称副本",
+)
+Index("ix_entities_work_created_id", entities.c.work_id, entities.c.created_at, entities.c.id)
+
+annotation_entities = Table(
+    "annotation_entities",
+    metadata,
+    Column("annotation_id", Uuid, ForeignKey("annotations.id"), primary_key=True),
+    Column("entity_id", Uuid, ForeignKey("entities.id"), primary_key=True),
+    comment="标注实体集合；复合主键去重，事务内核验同作品归属",
+)
+Index("ix_annotation_entities_entity", annotation_entities.c.entity_id)
+
+relations = Table(
+    "relations",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    Column("work_id", Uuid, ForeignKey("works.id"), nullable=False),
+    Column("title", String(256), nullable=False),
+    Column("relation_type", String(64), nullable=False),
+    Column("note", Text, nullable=False),
+    Column("status", String(16), nullable=False),
+    Column("version", Integer, nullable=False),
+    Column("created_at", DateTime(timezone=True), server_default=func.now(), nullable=False),
+    Column("updated_at", DateTime(timezone=True), server_default=func.now(), nullable=False),
+    CheckConstraint("version > 0", name="ck_relations_version"),
+    CheckConstraint("status IN ('active', 'withdrawn')", name="ck_relations_status"),
+    comment="多节点原文关系；撤回保留内容，状态和内容修改竞争同一版本",
+)
+Index("ix_relations_work_created_id", relations.c.work_id, relations.c.created_at, relations.c.id)
+
+relation_nodes = Table(
+    "relation_nodes",
+    metadata,
+    Column("relation_id", Uuid, ForeignKey("relations.id"), primary_key=True),
+    Column("ordinal", Integer, primary_key=True),
+    Column("work_id", Uuid, ForeignKey("works.id"), nullable=False),
+    Column("section_id", Uuid, ForeignKey("sections.id"), nullable=False),
+    Column("start_paragraph_id", Uuid, ForeignKey("paragraphs.id"), nullable=False),
+    Column("end_paragraph_id", Uuid, ForeignKey("paragraphs.id"), nullable=False),
+    Column("role", String(64)),
+    UniqueConstraint(
+        "relation_id",
+        "work_id",
+        "section_id",
+        "start_paragraph_id",
+        "end_paragraph_id",
+        name="uq_relation_nodes_ref",
+    ),
+    CheckConstraint("ordinal > 0", name="ck_relation_nodes_ordinal"),
+    comment="有序证据引用，不复制正文；至少两处不同范围及合法归属由事务校验",
+)
+Index("ix_relation_nodes_section", relation_nodes.c.section_id)
+
+relation_tags = Table(
+    "relation_tags",
+    metadata,
+    Column("relation_id", Uuid, ForeignKey("relations.id"), primary_key=True),
+    Column("tag_id", Uuid, ForeignKey("tags.id"), primary_key=True),
+    comment="关系共享标签集合；复合主键拒绝重复关联",
+)
+Index("ix_relation_tags_tag", relation_tags.c.tag_id)
+
+relation_entities = Table(
+    "relation_entities",
+    metadata,
+    Column("relation_id", Uuid, ForeignKey("relations.id"), primary_key=True),
+    Column("entity_id", Uuid, ForeignKey("entities.id"), primary_key=True),
+    comment="关系实体集合；复合主键去重，事务内核验同作品归属",
+)
+Index("ix_relation_entities_entity", relation_entities.c.entity_id)
