@@ -1,0 +1,17 @@
+# 由 AI 按 docs/部署指南.md 检查环境、选择参数后写出候选配置。
+# 这是示例，不是自动调参结果。路径相对于配置文件所在目录。
+schema_version = 1
+model_contract = "qwen3-embedding-0.6b-q8_0-v1"
+executable = "data/embedding/runtime/llama-server.exe"
+model_path = "data/embedding/models/Qwen3-Embedding-0.6B-Q8_0.gguf"
+backend = "cpu"
+device = "none"
+threads = 4
+threads_batch = 4
+context_tokens = 4096
+port = 18081
+
+# Linux 使用所准备的 llama-server 路径。
+# CUDA 候选必须使用同一 build 的 CUDA 运行时，backend = "cuda"，
+# device 使用 --list-devices 实际列出的 CUDA0 等名称；未验证不宣称可用。
+# 首版单 slot，batch / ubatch token 上限与 context_tokens 相同。
