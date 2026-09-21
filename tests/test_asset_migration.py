@@ -9,7 +9,7 @@ from conftest import ROOT, temporary_database
 from pydantic import SecretStr
 from sqlalchemy import select
 
-from novel_lens.asset_contracts import AnnotationCreate, AnnotationGet
+from novel_lens.asset_contracts import AnnotationCreate, AnnotationGet, AnnotationOut
 from novel_lens.assets import AssetService
 from novel_lens.config import Settings
 from novel_lens.contracts import SourceRange
@@ -62,6 +62,7 @@ def test_upgrade_preserves_existing_source(
                     ],
                 )
             ).result
+            assert isinstance(result, AnnotationOut)
             assert (
                 assets.get_annotation(AnnotationGet(work_id=work.id, annotation_id=result.id))
                 == result

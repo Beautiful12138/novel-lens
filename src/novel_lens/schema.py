@@ -5,6 +5,7 @@ from sqlalchemy import (
     Column,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     LargeBinary,
@@ -88,6 +89,13 @@ paragraphs = Table(
     comment="保真自然段及稳定 ID；Section 内顺序唯一，不按文学场景切分",
 )
 
+Index(
+    "ix_paragraphs_text_search",
+    paragraphs.c.text,
+    postgresql_using="pgroonga",
+    postgresql_with={"tokenizer": "'TokenBigram'", "normalizers": "'NormalizerAuto'"},
+)
+
 tags = Table(
     "tags",
     metadata,
@@ -119,6 +127,13 @@ Index(
     annotations.c.work_id,
     annotations.c.created_at,
     annotations.c.id,
+)
+
+Index(
+    "ix_annotations_note_search",
+    annotations.c.note,
+    postgresql_using="pgroonga",
+    postgresql_with={"tokenizer": "'TokenBigram'", "normalizers": "'NormalizerAuto'"},
 )
 
 annotation_ranges = Table(
@@ -254,3 +269,119 @@ relation_entities = Table(
     comment="关系实体集合；复合主键去重，事务内核验同作品归属",
 )
 Index("ix_relation_entities_entity", relation_entities.c.entity_id)
+
+style_guides = Table(
+    "style_guides",
+    metadata,
+    Column("work_id", Uuid, ForeignKey("works.id"), primary_key=True),
+    Column("scope_note", Text, nullable=False),
+    Column("version", Integer, nullable=False),
+    Column("created_at", DateTime(timezone=True), server_default=func.now(), nullable=False),
+    Column("updated_at", DateTime(timezone=True), server_default=func.now(), nullable=False),
+    CheckConstraint("version > 0", name="ck_style_guides_version"),
+    comment="每作品一份风格导航；范围说明是调用方声明，不代表分析进度",
+)
+
+style_guide_entries = Table(
+    "style_guide_entries",
+    metadata,
+    Column("work_id", Uuid, ForeignKey("style_guides.work_id"), primary_key=True),
+    Column("ordinal", Integer, primary_key=True),
+    Column("title", String(256), nullable=False),
+    Column("kind", String(16), nullable=False),
+    Column("description", Text, nullable=False),
+    Column("applicability", Text, nullable=False),
+    CheckConstraint("ordinal > 0", name="ck_style_guide_entries_ordinal"),
+    CheckConstraint(
+        "kind IN ('baseline', 'variation', 'exception')", name="ck_style_guide_entries_kind"
+    ),
+    comment="有序写法判断及适用边界；整体修订时替换，顺序不是稳定身份",
+)
+
+style_guide_ranges = Table(
+    "style_guide_ranges",
+    metadata,
+    Column("work_id", Uuid, primary_key=True),
+    Column("entry_ordinal", Integer, primary_key=True),
+    Column("ordinal", Integer, primary_key=True),
+    Column("section_id", Uuid, ForeignKey("sections.id"), nullable=False),
+    Column("start_paragraph_id", Uuid, ForeignKey("paragraphs.id"), nullable=False),
+    Column("end_paragraph_id", Uuid, ForeignKey("paragraphs.id"), nullable=False),
+    ForeignKeyConstraint(
+        ["work_id", "entry_ordinal"],
+        ["style_guide_entries.work_id", "style_guide_entries.ordinal"],
+    ),
+    UniqueConstraint(
+        "work_id",
+        "entry_ordinal",
+        "section_id",
+        "start_paragraph_id",
+        "end_paragraph_id",
+        name="uq_style_guide_ranges_ref",
+    ),
+    CheckConstraint("ordinal > 0", name="ck_style_guide_ranges_ordinal"),
+    comment="条目有序证据；事务内核验同作品、同章节及端点顺序，不复制原文",
+)
+
+analysis_jobs = Table(
+    "analysis_jobs",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    Column("work_id", Uuid, ForeignKey("works.id"), nullable=False),
+    Column("title", String(256), nullable=False),
+    Column("goal", Text, nullable=False),
+    Column("target_kind", String(16), nullable=False),
+    Column("status", String(16), nullable=False),
+    Column("recovery", JSONB, nullable=False),
+    Column("completion", JSONB(none_as_null=True)),
+    Column("version", Integer, nullable=False),
+    Column("created_at", DateTime(timezone=True), server_default=func.now(), nullable=False),
+    Column("updated_at", DateTime(timezone=True), server_default=func.now(), nullable=False),
+    CheckConstraint("version > 0", name="ck_analysis_jobs_version"),
+    CheckConstraint("target_kind IN ('whole_work', 'ranges')", name="ck_analysis_jobs_target"),
+    CheckConstraint("status IN ('running', 'paused', 'completed')", name="ck_analysis_jobs_status"),
+    CheckConstraint(
+        "(status = 'completed') = (completion IS NOT NULL)", name="ck_analysis_jobs_completion"
+    ),
+    comment="独立深读任务；接续信息不替代进度，完成说明记录当时导航版本",
+)
+Index(
+    "ix_analysis_jobs_work_created_id",
+    analysis_jobs.c.work_id,
+    analysis_jobs.c.created_at,
+    analysis_jobs.c.id,
+)
+
+analysis_targets = Table(
+    "analysis_targets",
+    metadata,
+    Column("job_id", Uuid, ForeignKey("analysis_jobs.id"), primary_key=True),
+    Column("ordinal", Integer, primary_key=True),
+    Column("section_id", Uuid, ForeignKey("sections.id"), nullable=False),
+    Column("start_paragraph_id", Uuid, ForeignKey("paragraphs.id"), nullable=False),
+    Column("end_paragraph_id", Uuid, ForeignKey("paragraphs.id"), nullable=False),
+    Column("start_ordinal", Integer, nullable=False),
+    Column("end_ordinal", Integer, nullable=False),
+    CheckConstraint(
+        "ordinal > 0 AND start_ordinal > 0 AND end_ordinal >= start_ordinal",
+        name="ck_analysis_targets_order",
+    ),
+    UniqueConstraint("job_id", "section_id", "start_ordinal", name="uq_analysis_targets_start"),
+    comment="固定且已合并的任务范围；端点序号来自不可变原文，事务内核验归属及不重叠",
+)
+
+analysis_coverage = Table(
+    "analysis_coverage",
+    metadata,
+    Column("job_id", Uuid, ForeignKey("analysis_jobs.id"), primary_key=True),
+    Column("paragraph_id", Uuid, ForeignKey("paragraphs.id"), primary_key=True),
+    Column("status", String(16), nullable=False),
+    Column("reason", Text),
+    CheckConstraint(
+        "status IN ('read', 'processed', 'needs_revisit')", name="ck_analysis_coverage_status"
+    ),
+    CheckConstraint(
+        "(status = 'needs_revisit') = (reason IS NOT NULL)", name="ck_analysis_coverage_reason"
+    ),
+    comment="任务内稀疏段落进度；缺省为未处理，归属和目标包含关系由事务校验",
+)

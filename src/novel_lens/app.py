@@ -35,6 +35,8 @@ from novel_lens.http import RequestSizeLimit, upload, upload_schema
 from novel_lens.importing import ImportService
 from novel_lens.mcp_api import create_mcp
 from novel_lens.reading import ReadingService
+from novel_lens.search import SearchService
+from novel_lens.search_contracts import AnnotationSearchHit, SearchRequest, SourceSearchHit
 
 PageLimit = Annotated[Limit, Query()]
 
@@ -46,6 +48,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     importing = ImportService(database, settings.max_file_bytes)
     reading = ReadingService(database)
     assets = AssetService(database)
+    search = SearchService(database)
     mcp = create_mcp(settings, importing, reading, assets)
     # 只允许当前监听端口；不沿用 SDK 默认允许任意本机端口的通配配置。
     names = {settings.host, "localhost"}
@@ -169,6 +172,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             media_type="application/octet-stream",
             headers={"Content-Disposition": f'attachment; filename="{work_id}.txt"'},
         )
+
+    @app.post("/source/search", summary="在指定作品内检索原文关键词")
+    def source_search(request: SearchRequest) -> Page[SourceSearchHit]:
+        return search.source(request)
+
+    @app.post("/annotations/search", summary="在指定作品内检索写法说明关键词")
+    def annotation_search(request: SearchRequest) -> Page[AnnotationSearchHit]:
+        return search.annotations(request)
 
     # SDK 自带 /mcp 路由，根挂载必须放在所有现有路由后，避免遮蔽 REST。
     app.mount("/", mcp_app)

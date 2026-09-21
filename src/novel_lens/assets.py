@@ -2,11 +2,13 @@
 
 import json
 from collections.abc import Callable
+from contextlib import nullcontext
 from datetime import datetime
 from hashlib import sha256
 from typing import Any
 from uuid import UUID, uuid4
 
+from pydantic import BaseModel
 from sqlalchemy import Connection, Select, Table, func, literal, or_, select, tuple_
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.engine import RowMapping
@@ -14,6 +16,10 @@ from sqlalchemy.exc import IntegrityError
 
 from novel_lens.asset_contracts import (
     MAX_ASSET_RESULT_BYTES,
+    AnalysisCheckpoint,
+    AnalysisJobComplete,
+    AnalysisJobCreate,
+    AnalysisJobModify,
     AnnotationCreate,
     AnnotationGet,
     AnnotationList,
@@ -38,6 +44,11 @@ from novel_lens.asset_contracts import (
     RelationSnapshot,
     RelationSummary,
     RelationUpdate,
+    StyleGuideCreate,
+    StyleGuideEntry,
+    StyleGuideGet,
+    StyleGuideOut,
+    StyleGuideUpdate,
     TagCreate,
     TagList,
     TagOut,
@@ -57,6 +68,9 @@ from novel_lens.schema import (
     relation_nodes,
     relation_tags,
     relations,
+    style_guide_entries,
+    style_guide_ranges,
+    style_guides,
     tags,
 )
 from novel_lens.schema import (
@@ -131,7 +145,9 @@ def scoped_row(
     """读取同作品对象；写操作先锁主记录，使内容和关联修改共享版本竞争。"""
     query = select(table).where(table.c.work_id == work_id, table.c.id == identifier)
     if lock:
-        query = query.with_for_update()
+        # 业务更新不改主键；NO KEY UPDATE 与外键检查的 KEY SHARE 兼容，
+        # 避免跨批次引用实体后再修订另一实体时形成外键锁环。
+        query = query.with_for_update(key_share=True)
     row = connection.execute(query).mappings().first()
     if row is None:
         raise ServiceError(code, "指定作品中不存在该对象", 404)
@@ -223,6 +239,68 @@ def annotation_out(connection: Connection, row: RowMapping) -> AnnotationOut:
     )
 
 
+def style_guide_out(connection: Connection, row: RowMapping) -> StyleGuideOut:
+    """在写锁或一致读取快照内组装导航；批量读引用，不加载原文。"""
+    references: dict[int, list[SourceRange]] = {}
+    for ref in connection.execute(
+        select(style_guide_ranges)
+        .where(style_guide_ranges.c.work_id == row["work_id"])
+        .order_by(style_guide_ranges.c.entry_ordinal, style_guide_ranges.c.ordinal)
+    ).mappings():
+        references.setdefault(ref["entry_ordinal"], []).append(
+            SourceRange(**{key: ref[key] for key in SourceRange.model_fields})
+        )
+    entries = [
+        StyleGuideEntry(
+            title=entry["title"],
+            kind=entry["kind"],
+            description=entry["description"],
+            applicability=entry["applicability"],
+            source_ranges=references.get(entry["ordinal"], []),
+        )
+        for entry in connection.execute(
+            select(style_guide_entries)
+            .where(style_guide_entries.c.work_id == row["work_id"])
+            .order_by(style_guide_entries.c.ordinal)
+        ).mappings()
+    ]
+    return StyleGuideOut(**dict(row), entries=entries)
+
+
+def replace_style_guide_entries(connection: Connection, request: StyleGuideCreate) -> None:
+    """调用方持有主记录写锁；整体替换条目及证据，失败由外层事务回滚。"""
+    for entry in request.entries:
+        for ref in entry.source_ranges:
+            range_bounds(connection, request.work_id, ref)
+    connection.execute(
+        style_guide_ranges.delete().where(style_guide_ranges.c.work_id == request.work_id)
+    )
+    connection.execute(
+        style_guide_entries.delete().where(style_guide_entries.c.work_id == request.work_id)
+    )
+    if not request.entries:
+        return
+    connection.execute(
+        style_guide_entries.insert(),
+        [
+            dict(
+                work_id=request.work_id,
+                ordinal=index,
+                **entry.model_dump(exclude={"source_ranges"}),
+            )
+            for index, entry in enumerate(request.entries, 1)
+        ],
+    )
+    connection.execute(
+        style_guide_ranges.insert(),
+        [
+            dict(entry_ordinal=index, ordinal=ordinal, **ref.model_dump())
+            for index, entry in enumerate(request.entries, 1)
+            for ordinal, ref in enumerate(entry.source_ranges, 1)
+        ],
+    )
+
+
 def page_rows(
     connection: Connection,
     table: Table,
@@ -260,17 +338,66 @@ def page_rows(
     return rows[: request.limit], cursor
 
 
-class AssetService:
-    """复用应用数据库；事务中保存资产与结果，读取使用同一数据库快照。"""
+type WriteRequest = (
+    TagCreate
+    | AnnotationCreate
+    | EntityCreate
+    | RelationCreate
+    | RelationSetStatus
+    | StyleGuideCreate
+    | AnalysisJobCreate
+    | AnalysisJobModify
+)
 
-    def __init__(self, database: Database) -> None:
+
+def lock_write_batch(connection: Connection, request: WriteRequest) -> None:
+    """统一先锁请求键、再锁资源，批次预先排序以避免反向写入产生锁环。
+
+    两个 advisory namespace 分别用于请求键和资源；哈希碰撞只增加串行等待。
+    子操作重复取得事务已持有的锁，不创建新事务，也不释放外层锁。
+    """
+    values = [request]
+    if isinstance(request, AnalysisCheckpoint):
+        values.extend(item.input for item in request.writes)
+    keys = [str(value.request_id) for value in values]
+    resources: list[str] = []
+    for value in values:
+        if isinstance(value, TagCreate):
+            resources.append(f"tag:{value.namespace}:{value.name}")
+        for field in ("annotation_id", "entity_id", "relation_id", "job_id"):
+            identifier = getattr(value, field, None)
+            if identifier is not None:
+                resources.append(f"{field}:{identifier}")
+        if isinstance(value, (StyleGuideCreate, AnalysisJobComplete)):
+            resources.append(f"style:{value.work_id}")
+    for namespace, names in ((71001, keys), (71002, resources)):
+        hashes = {int.from_bytes(sha256(name.encode()).digest()[:4], signed=True) for name in names}
+        for key in sorted(hashes):
+            connection.execute(select(func.pg_advisory_xact_lock(namespace, key)))
+
+
+class AssetService:
+    """复用应用数据库；事务中保存资产与结果，读取使用同一数据库快照。
+
+    可绑定 checkpoint 的连接，仅用于子写入，由外层负责提交和回滚；实例不共享临时连接。
+    """
+
+    def __init__(self, database: Database, connection: Connection | None = None) -> None:
         self.database = database
+        self.connection = connection
 
     def _write(
         self,
-        request: TagCreate | AnnotationCreate | EntityCreate | RelationCreate | RelationSetStatus,
+        request: TagCreate
+        | AnnotationCreate
+        | EntityCreate
+        | RelationCreate
+        | RelationSetStatus
+        | StyleGuideCreate
+        | AnalysisJobCreate
+        | AnalysisJobModify,
         operation: str,
-        action: Callable[[Connection], TagOut | AnnotationOut | EntityOut | RelationSnapshot],
+        action: Callable[[Connection], BaseModel],
     ) -> AssetWriteOut:
         """唯一请求键先参与事务竞争，再执行业务，避免同键修改被误判为版本冲突。
 
@@ -278,6 +405,14 @@ class AssetService:
         PostgreSQL 的 ON CONFLICT 等待竞争事务结束；失败事务不消耗请求键。
         """
         inputs = request.model_dump(mode="json", exclude={"request_id"})
+        if isinstance(request, AnalysisCheckpoint):
+            # 子操作省略 entity_ids 的保留语义须参与批次指纹，不能与显式清空等同。
+            for item, payload in zip(request.writes, inputs["writes"], strict=True):
+                if (
+                    isinstance(item.input, AnnotationUpdate)
+                    and "entity_ids" not in item.input.model_fields_set
+                ):
+                    payload["input"].pop("entity_ids")
         contract = "asset-v2"
         if isinstance(request, TagCreate):
             contract = "asset-v1"
@@ -300,7 +435,12 @@ class AssetService:
             ).encode()
         ).hexdigest()
         try:
-            with self.database.engine.begin() as connection:
+            with (
+                nullcontext(self.connection)
+                if self.connection is not None
+                else self.database.engine.begin()
+            ) as connection:
+                lock_write_batch(connection, request)
                 claimed = connection.execute(
                     insert(requests)
                     .values(request_id=request.request_id, fingerprint=fingerprint, response={})
@@ -342,6 +482,81 @@ class AssetService:
                     "TAG_NAME_CONFLICT", "标签名称已存在，请查询后复用", 409
                 ) from None
             raise
+
+    def create_style_guide(self, request: StyleGuideCreate) -> AssetWriteOut:
+        """作品主键防止异键并发创建多份导航；同键重试由共享写入流程恢复。"""
+
+        def action(connection: Connection) -> StyleGuideOut:
+            work_at(connection, request.work_id)
+            row = (
+                connection.execute(
+                    insert(style_guides)
+                    .values(work_id=request.work_id, scope_note=request.scope_note, version=1)
+                    .on_conflict_do_nothing(index_elements=[style_guides.c.work_id])
+                    .returning(style_guides)
+                )
+                .mappings()
+                .first()
+            )
+            if row is None:
+                raise ServiceError("STYLE_GUIDE_EXISTS", "该作品已有风格导航，请读取后修订", 409)
+            replace_style_guide_entries(connection, request)
+            return style_guide_out(connection, row)
+
+        return self._write(request, "style_guide_create", action)
+
+    def get_style_guide(self, request: StyleGuideGet) -> StyleGuideOut:
+        """跨表读取同一快照；范围说明和条目始终属于同一导航版本。"""
+        with self.database.engine.connect().execution_options(
+            isolation_level="REPEATABLE READ"
+        ) as connection:
+            work_at(connection, request.work_id)
+            row = (
+                connection.execute(
+                    select(style_guides).where(style_guides.c.work_id == request.work_id)
+                )
+                .mappings()
+                .first()
+            )
+            if row is None:
+                raise ServiceError("STYLE_GUIDE_NOT_FOUND", "该作品尚无风格导航", 404)
+            return style_guide_out(connection, row)
+
+    def update_style_guide(self, request: StyleGuideUpdate) -> AssetWriteOut:
+        """主记录锁覆盖版本检查、条目替换和快照；不自动合并文学结论。"""
+
+        def action(connection: Connection) -> StyleGuideOut:
+            work_at(connection, request.work_id)
+            old = (
+                connection.execute(
+                    select(style_guides)
+                    .where(style_guides.c.work_id == request.work_id)
+                    .with_for_update()
+                )
+                .mappings()
+                .first()
+            )
+            if old is None:
+                raise ServiceError("STYLE_GUIDE_NOT_FOUND", "该作品尚无风格导航", 404)
+            check_version(old, request.expected_version)
+            replace_style_guide_entries(connection, request)
+            row = (
+                connection.execute(
+                    style_guides.update()
+                    .where(style_guides.c.work_id == request.work_id)
+                    .values(
+                        scope_note=request.scope_note,
+                        version=old["version"] + 1,
+                        updated_at=func.clock_timestamp(),
+                    )
+                    .returning(style_guides)
+                )
+                .mappings()
+                .one()
+            )
+            return style_guide_out(connection, row)
+
+        return self._write(request, "style_guide_update", action)
 
     def write_result(self, request_id: UUID) -> AssetWriteOut:
         with self.database.engine.connect() as connection:
