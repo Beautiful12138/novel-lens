@@ -7,6 +7,8 @@ name = "novel-lens"
 version = "0.1.0"
 description = "小说分析与创作知识服务"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "fastapi>=0.115,<1",
@@ -25,6 +27,10 @@ dev = ["pytest>=8.3,<10", "ruff>=0.11,<1", "mypy>=1.15,<2", "httpx>=0.28,<1"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/novel_lens"]
+
+[tool.hatch.build.targets.sdist]
+# 防止临时目录中的嵌套配置样例被 Git 忽略规则的反向匹配重新纳入源码包。
+exclude = ["/tmp/**"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
