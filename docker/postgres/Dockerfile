@@ -1,5 +1,5 @@
 # 在现有 PostgreSQL 18.6 基础上增加全文扩展，保留官方入口和数据目录。
-FROM mirror.ccs.tencentyun.com/library/postgres:18@sha256:4ef4dbc939d61acea57712655ddb4b4ab27419c913f94cca0cd57cb3ea3c2280
+FROM postgres:18@sha256:4ef4dbc939d61acea57712655ddb4b4ab27419c913f94cca0cd57cb3ea3c2280
 
 ARG PGROONGA_VERSION=4.0.8-1
 
