@@ -72,6 +72,7 @@ def test_upgrade_preserves_assets_and_snapshots(
                 t
                 for t in metadata.sorted_tables
                 if not t.name.startswith("analysis_")
+                and not t.name.startswith("semantic_")
                 and (revision == "0004" or not t.name.startswith("style_guide"))
             ]
             with database.engine.connect() as connection:
@@ -90,7 +91,7 @@ def test_upgrade_preserves_assets_and_snapshots(
             with database.engine.connect() as connection:
                 assert (
                     connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-                    == "0006"
+                    == "0007"
                 )
                 for table in tables:
                     assert [

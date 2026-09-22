@@ -2,7 +2,7 @@
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import FastAPI, Query, Request, Response
@@ -29,6 +29,7 @@ from novel_lens.contracts import (
     WorkOut,
 )
 from novel_lens.database import Database
+from novel_lens.embedding import EmbeddingClient
 from novel_lens.errors import ServiceError
 from novel_lens.errors import database_error as public_database_error
 from novel_lens.http import RequestSizeLimit, upload, upload_schema
@@ -37,6 +38,16 @@ from novel_lens.mcp_api import create_mcp
 from novel_lens.reading import ReadingService
 from novel_lens.search import SearchService
 from novel_lens.search_contracts import AnnotationSearchHit, SearchRequest, SourceSearchHit
+from novel_lens.semantic import SemanticService
+from novel_lens.semantic_contracts import (
+    SemanticBuild,
+    SemanticCreate,
+    SemanticGet,
+    SemanticResults,
+    SemanticSearch,
+    SemanticStatus,
+    SemanticWrite,
+)
 
 PageLimit = Annotated[Limit, Query()]
 
@@ -49,7 +60,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     reading = ReadingService(database)
     assets = AssetService(database)
     search = SearchService(database)
-    mcp = create_mcp(settings, importing, reading, assets)
+    semantic = SemanticService(database, EmbeddingClient(settings.embedding_config))
+    mcp = create_mcp(settings, importing, reading, assets, semantic)
     # 只允许当前监听端口；不沿用 SDK 默认允许任意本机端口的通配配置。
     names = {settings.host, "localhost"}
     if settings.host == "localhost":
@@ -180,6 +192,42 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/annotations/search", summary="在指定作品内检索写法说明关键词")
     def annotation_search(request: SearchRequest) -> Page[AnnotationSearchHit]:
         return search.annotations(request)
+
+    @app.post("/works/{work_id}/semantic-indexes", summary="显式创建全文语义索引代")
+    def semantic_create(work_id: UUID, request: SemanticCreate) -> SemanticWrite:
+        if work_id != request.work_id:
+            raise ServiceError("INVALID_INPUT", "路径与请求中的作品 ID 不一致")
+        return semantic.create(request)
+
+    @app.post("/works/{work_id}/semantic-indexes/{index_id}/build", summary="构建有限索引批次")
+    def semantic_build(work_id: UUID, index_id: UUID, request: SemanticBuild) -> SemanticWrite:
+        if work_id != request.work_id or index_id != request.index_id:
+            raise ServiceError("INVALID_INPUT", "路径与请求中的作品或索引 ID 不一致")
+        return semantic.build(request)
+
+    @app.get("/works/{work_id}/semantic-indexes/status", summary="发现索引代与分页读取缺口")
+    def semantic_get(
+        work_id: UUID,
+        kind: Literal["fulltext"] = "fulltext",
+        index_id: UUID | None = None,
+        limit: Annotated[int, Query(ge=1, le=100)] = 100,
+        cursor: Annotated[str | None, Query(max_length=2048)] = None,
+    ) -> SemanticStatus:
+        return semantic.get(
+            SemanticGet(
+                work_id=work_id,
+                kind=kind,
+                index_id=index_id,
+                limit=limit,
+                cursor=cursor,
+            )
+        )
+
+    @app.post("/works/{work_id}/semantic-search", summary="在指定作品内查询原文语义候选")
+    def semantic_search(work_id: UUID, request: SemanticSearch) -> SemanticResults:
+        if work_id != request.work_id:
+            raise ServiceError("INVALID_INPUT", "路径与请求中的作品 ID 不一致")
+        return semantic.search(request)
 
     # SDK 自带 /mcp 路由，根挂载必须放在所有现有路由后，避免遮蔽 REST。
     app.mount("/", mcp_app)

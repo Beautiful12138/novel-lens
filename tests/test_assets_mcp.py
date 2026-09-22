@@ -21,7 +21,7 @@ def test_asset_tools_roundtrip_restart_and_errors(postgres_url: str, tmp_path: P
     async def exercise(rest: httpx.Client) -> dict[str, Any]:
         async with Client(str(rest.base_url).rstrip("/") + "/mcp") as mcp:
             tools = (await mcp.list_tools()).tools
-            assert len(tools) == 42
+            assert len(tools) == 46
             assert all(t.output_schema for t in tools)
             by_name = {t.name: t for t in tools}
             assert by_name["annotation_update"].annotations.destructive_hint  # type: ignore[union-attr]

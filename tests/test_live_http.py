@@ -21,6 +21,8 @@ def running_server(
     label: str,
     *,
     request_limit: int | None = None,
+    embedding_config: Path | None = None,
+    request_timeout: float = 10,
 ) -> Iterator[httpx.Client]:
     """随机端口启动服务，退出时发送关闭信号；超时强制回收并判定失败。"""
     with socket.socket() as listener:
@@ -30,6 +32,8 @@ def running_server(
     env.update(NOVEL_LENS_DATABASE_URL=url, NOVEL_LENS_PORT=str(port))
     if request_limit is not None:
         env["NOVEL_LENS_MAX_REQUEST_BYTES"] = str(request_limit)
+    if embedding_config is not None:
+        env["NOVEL_LENS_EMBEDDING_CONFIG"] = str(embedding_config)
     with (
         (directory / f"{label}.stdout").open("wb") as out,
         (directory / f"{label}.stderr").open("wb") as err,
@@ -44,7 +48,7 @@ def running_server(
         )
         try:
             with httpx.Client(
-                base_url=f"http://127.0.0.1:{port}", timeout=10, trust_env=False
+                base_url=f"http://127.0.0.1:{port}", timeout=request_timeout, trust_env=False
             ) as client:
                 deadline = time.monotonic() + 15
                 while True:

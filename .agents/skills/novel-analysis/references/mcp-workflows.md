@@ -53,6 +53,16 @@ recovery 必须包含 next_action，可包含 facts=`[{note, source_ranges}]`、
 
 新会话从当前任务、Coverage 和 recovery 恢复，不依赖旧对话。工具读取不自动改变进度；recovery 也不会保存尚未提交的请求。找不到唯一原任务时先澄清，原请求键或输入丢失且无法核实时报告结果不明，不承诺无条件恢复。
 
+## 可选全文语义候选
+
+按写法处境找原文时，先用 `semantic_index_get({work_id})` 发现全文索引的 active / target 和 coverage。已有完整索引可用 `source_semantic_search({work_id, query, limit?})` 查询自然语言候选；kind 目前仅 fulltext，limit 默认 10、最大 50，无分页。结果 items 中的 source_range 可交给 source_read，excerpt 和 score 只用于选候选，不能代替深读或推进 Coverage。
+
+参考查询默认只读。用户明确要求构建索引时，才用 `semantic_index_create({work_id, request_id})` 获得顶层 index_id，再分批 `semantic_index_build({work_id, index_id, request_id, max_items?})`，max_items 默认 4、范围 1—4。每个新批次用新请求键，超时保留原键和参数重试；replayed 是原批次快照，最新状态用 get 读取。不将索引工具放入 analysis_checkpoint.writes。
+
+building 继续构建，failed 修复原因后接续原代；ready 为完整索引，partial 为扫描完但存在缺口，superseded 的代不再构建。新会话从 get 恢复 target，不为接续重复 create。指定 index_id 的 get 可用 limit / cursor 分页读取 blocked 范围。allow_partial 默认 false，仅在任务允许接受缺口时显式设 true，并说明 coverage 与 partial；重建时默认仍可查询旧完整 active。
+
+缺少配置、端点不可用、迁移未就绪或契约不符时报告对应错误，不自行启动服务、迁移数据库或更换模型；可使用既有关键词和坐标入口。无候选、部分覆盖或 Top-K 窗口限制都不证明全文不存在相关写法。
+
 ## 资产选择与写入参数
 
 先查候选，再按 ID 取详情；不要从摘要重建完整资产后覆盖它。

@@ -1,6 +1,7 @@
 """读取当前工作目录配置，并生成不包含原始输入值的错误信息。"""
 
 from ipaddress import ip_address
+from pathlib import Path
 from typing import Annotated, Literal
 
 from pydantic import Field, SecretStr, StringConstraints, ValidationError, field_validator
@@ -28,6 +29,7 @@ class Settings(BaseSettings):
     port: int = Field(default=8000, ge=1, le=65535)
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     database_url: SecretStr | None = None
+    embedding_config: Path | None = None
     max_file_bytes: int = Field(default=64 * 1024 * 1024, ge=1)
     max_request_bytes: int = Field(default=65 * 1024 * 1024, ge=1)
 
@@ -75,6 +77,7 @@ def load_settings() -> Settings:
             "port": "必须为 1–65535 的整数",
             "log_level": "必须为 DEBUG、INFO、WARNING、ERROR 或 CRITICAL",
             "database_url": "必须为包含数据库名的 postgresql+psycopg 连接串",
+            "embedding_config": "必须为本机 embedding TOML 配置路径",
             "max_file_bytes": "必须为正整数",
             "max_request_bytes": "必须为正整数",
         }

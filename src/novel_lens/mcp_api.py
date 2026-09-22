@@ -78,12 +78,23 @@ from novel_lens.contracts import (
     ValidationReport,
     WorkOut,
 )
+from novel_lens.embedding import EmbeddingClient
 from novel_lens.errors import ServiceError, database_error
 from novel_lens.importing import ImportService
 from novel_lens.local_files import read_source
 from novel_lens.reading import ReadingService
 from novel_lens.search import SearchService
 from novel_lens.search_contracts import AnnotationSearchHit, SearchRequest, SourceSearchHit
+from novel_lens.semantic import SemanticService
+from novel_lens.semantic_contracts import (
+    SemanticBuild,
+    SemanticCreate,
+    SemanticGet,
+    SemanticResults,
+    SemanticSearch,
+    SemanticStatus,
+    SemanticWrite,
+)
 
 MAX_RESULT_BYTES = MAX_ASSET_RESULT_BYTES
 
@@ -156,6 +167,7 @@ def create_mcp(
     importing: ImportService,
     reading: ReadingService,
     assets: AssetService,
+    semantic: SemanticService | None = None,
 ) -> Server[Any]:
     """引用应用已有的服务，不创建数据库连接池、不请求 REST，也不自行启动服务器。
 
@@ -198,6 +210,44 @@ def create_mcp(
         )
 
     search = SearchService(reading.database)
+    semantic = semantic or SemanticService(
+        reading.database, EmbeddingClient(settings.embedding_config)
+    )
+    register(
+        "semantic_index_create",
+        SemanticCreate,
+        SemanticWrite,
+        semantic.create,
+        "显式创建作品的全文语义索引代；相同 request_id 重放。重建保留旧完整代，"
+        "接续用 build，不要重复 create。需本机 embedding 与迁移 0007。",
+        writes=True,
+    )
+    register(
+        "semantic_index_build",
+        SemanticBuild,
+        SemanticWrite,
+        semantic.build,
+        "构建至多 4 个完整段落切片，批次最多 4095 token。每批使用新 request_id，"
+        "超时重试复用原 ID；返回代状态和覆盖。阻塞原文不截断。",
+        writes=True,
+    )
+    register(
+        "semantic_index_get",
+        SemanticGet,
+        SemanticStatus,
+        semantic.get,
+        "无需模型在线即可发现作品全文索引的 active/target；"
+        "指定 index_id 可分页读取阻塞范围。语义覆盖不代表分析进度。",
+    )
+    register(
+        "source_semantic_search",
+        SemanticSearch,
+        SemanticResults,
+        semantic.search,
+        "在指定作品的单个全文索引代内按自然语言查询候选；返回实际 SourceRange，"
+        "用 source_read 回读。默认只查完整索引；allow_partial=true 才允许部分覆盖。"
+        "分数不是文学质量；kind 目前仅支持 fulltext。",
+    )
     register(
         "source_search",
         SearchRequest,

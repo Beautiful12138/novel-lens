@@ -19,7 +19,10 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB
 
+from novel_lens.semantic_schema import register_semantic_tables
+
 metadata = MetaData()
+register_semantic_tables(metadata)
 
 works = Table(
     "works",

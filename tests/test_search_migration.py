@@ -37,7 +37,9 @@ def test_upgrade_reindex_and_downgrade(postgres_url: str, monkeypatch: pytest.Mo
                 assert client.get(f"/works/{source[0]}").status_code == 200
             with database.engine.connect() as c:
                 before = {
-                    t.name: list(c.execute(select(t)).mappings()) for t in metadata.sorted_tables
+                    t.name: list(c.execute(select(t)).mappings())
+                    for t in metadata.sorted_tables
+                    if not t.name.startswith("semantic_")
                 }
             with monkeypatch.context() as patch:
                 patch.setenv("NOVEL_LENS_DATABASE_URL", url)
@@ -51,7 +53,9 @@ def test_upgrade_reindex_and_downgrade(postgres_url: str, monkeypatch: pytest.Mo
                     for name in ["ix_paragraphs_text_search", "ix_annotations_note_search"]:
                         c.execute(text(f"REINDEX INDEX {name}"))
                     for table in metadata.sorted_tables:
-                        assert list(c.execute(select(table)).mappings()) == before[table.name]
+                        assert list(c.execute(select(table)).mappings()) == before.get(
+                            table.name, []
+                        )
                 assert search.source(request) == source_hits
                 assert search.annotations(request) == note_hits
                 command.downgrade(config, "0005")
