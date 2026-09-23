@@ -218,8 +218,9 @@ def create_mcp(
         SemanticCreate,
         SemanticWrite,
         semantic.create,
-        "显式创建作品的全文语义索引代；相同 request_id 重放。重建保留旧完整代，"
-        "接续用 build，不要重复 create。需本机 embedding 与迁移 0007。",
+        "显式创建作品 fulltext 或 annotation 层的原文语义索引代；相同 request_id 重放。"
+        "重建保留旧完整代，"
+        "接续用 build，不要重复 create。需本机 embedding 与迁移 0008。",
         writes=True,
     )
     register(
@@ -236,7 +237,7 @@ def create_mcp(
         SemanticGet,
         SemanticStatus,
         semantic.get,
-        "无需模型在线即可发现作品全文索引的 active/target；"
+        "无需模型在线即可发现作品指定层索引的 active/target；"
         "指定 index_id 可分页读取阻塞范围。语义覆盖不代表分析进度。",
     )
     register(
@@ -244,9 +245,10 @@ def create_mcp(
         SemanticSearch,
         SemanticResults,
         semantic.search,
-        "在指定作品的单个全文索引代内按自然语言查询候选；返回实际 SourceRange，"
+        "在指定作品、指定层的单个索引代内按自然语言查询候选；返回实际 SourceRange，"
         "用 source_read 回读。默认只查完整索引；allow_partial=true 才允许部分覆盖。"
-        "分数不是文学质量；kind 目前仅支持 fulltext。",
+        "分数不是文学质量；kind 支持 fulltext 和 annotation；标注命中带当前版本，"
+        "须 annotation_get 回读。",
     )
     register(
         "source_search",

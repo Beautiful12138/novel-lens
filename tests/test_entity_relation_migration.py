@@ -61,7 +61,7 @@ def test_upgrade_real_0002_records_and_wire_compatibility(
             with database.engine.connect() as connection:
                 assert (
                     connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-                    == "0007"
+                    == "0008"
                 )
                 for name, expected in fixture["tables"].items():
                     actual = (

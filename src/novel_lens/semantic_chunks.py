@@ -4,6 +4,7 @@ import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
+from uuid import UUID
 
 from novel_lens.embedding import (
     MAX_PARAGRAPH_BYTES,
@@ -21,6 +22,9 @@ class Chunk:
     paragraphs: list[dict[str, Any]]
     tokens: list[int] | None
     blocked_reason: str | None = None
+    annotation_id: UUID | None = None
+    evidence_id: str | None = None
+    range_ordinal: int | None = None
 
     @property
     def body(self) -> str:

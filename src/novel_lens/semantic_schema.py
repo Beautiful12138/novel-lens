@@ -1,4 +1,4 @@
-"""派生索引元数据与固定维度 SQL 类型；与 0007 保持一致用于迁移差异检查。"""
+"""派生索引元数据与固定维度 SQL 类型；与 0008 保持一致用于迁移差异检查。"""
 
 from typing import Any
 
@@ -40,7 +40,7 @@ ischema_names["vector"] = Vector
 
 
 def register_semantic_tables(metadata: MetaData) -> None:
-    """按依赖顺序声明四张表；跨作品端点仍在写入短事务中核验。"""
+    """声明五张派生表；跨作品端点仍在写入短事务中核验。"""
     Table(
         "semantic_indexes",
         metadata,
@@ -59,7 +59,7 @@ def register_semantic_tables(metadata: MetaData) -> None:
         Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
         UniqueConstraint("work_id", "kind", "id", name="uq_semantic_indexes_scope"),
         UniqueConstraint("work_id", "kind", "request_id", name="uq_semantic_indexes_request"),
-        CheckConstraint("kind='fulltext'", name="ck_semantic_indexes_kind"),
+        CheckConstraint("kind IN ('fulltext','annotation')", name="ck_semantic_indexes_kind"),
         CheckConstraint(
             "status IN ('building','ready','partial','failed','superseded')",
             name="ck_semantic_indexes_status",
@@ -83,6 +83,29 @@ def register_semantic_tables(metadata: MetaData) -> None:
         ),
         comment="同作品同层的可查询完整代与构建目标；完整发布时原子切换 active",
     )
+    Table(
+        "semantic_annotation_snapshots",
+        metadata,
+        Column("index_id", Uuid, primary_key=True),
+        Column("annotation_id", Uuid, ForeignKey("annotations.id"), primary_key=True),
+        Column("work_id", Uuid, nullable=False),
+        Column("kind", String(16), nullable=False, server_default="annotation"),
+        Column("evidence_id", String(64), nullable=False),
+        Column("ranges", JSONB, nullable=False),
+        UniqueConstraint(
+            "index_id", "annotation_id", "evidence_id", name="uq_semantic_annotation_evidence"
+        ),
+        ForeignKeyConstraint(
+            ["work_id", "kind", "index_id"],
+            ["semantic_indexes.work_id", "semantic_indexes.kind", "semantic_indexes.id"],
+        ),
+        CheckConstraint("kind='annotation'", name="ck_semantic_snapshot_kind"),
+        CheckConstraint(
+            "jsonb_typeof(ranges)='array' AND jsonb_array_length(ranges)>0",
+            name="ck_semantic_snapshot_ranges",
+        ),
+        comment="创建代时的规范化引用与原文摘要；每标注一行，不保存正文，不随资产编辑变更",
+    )
     items = Table(
         "semantic_index_items",
         metadata,
@@ -101,6 +124,25 @@ def register_semantic_tables(metadata: MetaData) -> None:
         Column("bytes", Integer, nullable=False),
         Column("embedding", Vector()),
         Column("blocked_reason", String(64)),
+        Column("annotation_id", Uuid),
+        Column("evidence_id", String(64)),
+        Column("range_ordinal", Integer),
+        ForeignKeyConstraint(
+            ["index_id", "annotation_id", "evidence_id"],
+            [
+                "semantic_annotation_snapshots.index_id",
+                "semantic_annotation_snapshots.annotation_id",
+                "semantic_annotation_snapshots.evidence_id",
+            ],
+            name="fk_semantic_items_evidence",
+        ),
+        CheckConstraint(
+            """((kind='fulltext' AND annotation_id IS NULL AND evidence_id IS NULL
+            AND range_ordinal IS NULL) OR (kind='annotation' AND annotation_id IS NOT NULL
+            AND evidence_id IS NOT NULL AND range_ordinal IS NOT NULL AND range_ordinal>0))
+            IS TRUE""",
+            name="ck_semantic_items_origin",
+        ),
         ForeignKeyConstraint(
             ["work_id", "kind", "index_id"],
             ["semantic_indexes.work_id", "semantic_indexes.kind", "semantic_indexes.id"],
@@ -127,6 +169,12 @@ def register_semantic_tables(metadata: MetaData) -> None:
         comment="连续完整段落切片；短事务校验原文归属及端点，ready 向量或明确阻塞，不复制正文",
     )
     Index("ix_semantic_items_scope", items.c.work_id, items.c.index_id, items.c.section_id)
+    Index(
+        "ix_semantic_items_annotation",
+        items.c.index_id,
+        items.c.annotation_id,
+        items.c.range_ordinal,
+    )
     Table(
         "semantic_build_receipts",
         metadata,

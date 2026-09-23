@@ -29,13 +29,13 @@ SourceRange 的四项为 work_id、section_id、start_paragraph_id、end_paragra
 
 两个全文工具的 terms 是 1–8 个普通关键词，每词最多 128 字符，不写查询表达式；match 为 all / any，默认 all，all 必须在同一段原文或同一条说明中全部命中。中文支持单字、连续词，ASCII 按词且忽略大小写，兼容字符会归一化。按原文顺序或标注创建顺序返回，不按相似度排名。excerpt 是不超过 200 字符的真实子串；match_located=false 表示未定位到命中位置，返回的是段首摘要。说明修订可能改变后续页的命中集合。
 
-## 可选全文语义查询
+## 可选原文语义查询
 
-已连接服务提供语义工具时，先用 `semantic_index_get({work_id})` 查看 active / target 和 coverage；该读取不需要模型在线。已有完整索引可用 `source_semantic_search({work_id, query, limit?})` 按自然语言查询全文原文，kind 目前只支持 fulltext。query 为 1—8192 字符的非空白文本，加模型指令后的 token 数仍受服务预算限制；limit 默认 10、最大 50，无分页。
+已连接服务提供语义工具时，先用 `semantic_index_get({work_id, kind?})` 查看 active / target 和 coverage；该读取不需要模型在线。已有完整索引可用 `source_semantic_search({work_id, kind?, query, limit?})` 按自然语言查询。kind 默认 fulltext，用于全文原文；annotation 用于已标注案例的引用原文，两层分别查询。query 为 1—8192 字符的非空白文本，加模型指令后的 token 数仍受服务预算限制；limit 默认 10、最大 50，无分页。
 
-结果 items 包含 source_range、excerpt、excerpt_truncated 和 score，用 source_read 回读实际证据。score 是余弦相似度，不代表文学质量；candidate_window_limited 表示候选窗口受限，少量结果不证明穷尽全书。coverage 按唯一段落计数，与分析进度无关。
+结果 items 包含 source_range、excerpt、excerpt_truncated 和 score，用 source_read 回读实际证据。score 是余弦相似度，不代表文学质量；candidate_window_limited 表示候选窗口受限，少量结果不证明穷尽全书。fulltext 的 coverage 按唯一段落计数，annotation 按当前标注计数；两者均与分析进度无关。标注候选另含 annotation_id、annotation_version、range_ordinal，先 annotation_get 读最新说明和全部引用，再回读原文；分数仍只表示原文相似。
 
-默认只查询完整 active。任务允许接受缺口时，才显式使用 `allow_partial=true`，并说明返回的 partial 与 coverage；必要时指定 get 返回的 index_id，不混用其他作品或代。缺少完整索引、模型不可用或契约不符时，可改用关键词与已有坐标，不能伪装为没有相关内容。本 Skill 默认只读，不因写作自动调用 semantic_index_create / semantic_index_build，也不自行部署或升级数据库。
+默认只查询当前完整的 active。标注新增或改范围后，generation_status 可能仍为 ready，但 coverage.complete 为 false；关注 stale、not_indexed、blocked、pending，不能按历史状态宣称当前完整。只改说明或标签不使向量失效。任务允许接受缺口时，才显式使用 `allow_partial=true`，并说明返回的 partial 与 coverage；必要时指定 get 返回的 index_id，不混用其他作品或代。缺少完整索引、模型不可用或契约不符时，可改用关键词与已有坐标，不能伪装为没有相关内容。本 Skill 默认只读，不因写作自动调用 semantic_index_create / semantic_index_build，也不自行部署或升级数据库。
 
 ## 当前检索策略
 
@@ -46,7 +46,7 @@ SourceRange 的四项为 work_id、section_id、start_paragraph_id、end_paragra
 - 按情境字词使用 source_search，按写法术语使用 annotation_search；可并用标签、实体与关系查询，再按对象 ID 和真实范围去重。关键词无结果只说明当前字词没有命中，可改用同义表达或沿已知证据补读，不能据此宣布原作不存在相关表达。
 - 摘要与裁剪说明不是完整证据。选择候选后读取对应 get 与原文，尤其核对条件、解释边界和另一种可能读法。
 - Relation 默认查 active；若读取到 withdrawn，不将它作为有效结论。可以回到原文独立核验，但不能把历史 asset_write_get 快照当作当前关系恢复有效的证明。
-- 全文语义查询与关键词、标注和关系入口分开使用，当前没有跨层统一 Search。工具发现中未提供的能力不能通过编造调用补齐。
+- 两层原文语义查询与关键词、标注和关系入口分开使用，当前没有跨层统一 Search。工具发现中未提供的能力不能通过编造调用补齐。
 
 ## 调用模板
 

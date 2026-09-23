@@ -16,7 +16,8 @@ from novel_lens.embedding_runtime import read_config, save_config
 from novel_lens.embedding_runtime import running_server as embedding_server
 
 
-def test_real_model_http_mcp_restart(postgres_url: str, tmp_path: Path) -> None:
+@pytest.mark.parametrize("kind", ["fulltext", "annotation"])
+def test_real_model_http_mcp_restart(postgres_url: str, tmp_path: Path, kind: str) -> None:
     path = os.environ.get("NOVEL_LENS_TEST_EMBEDDING_CONFIG")
     if not path:
         pytest.skip("未指定真实模型配置，未执行 embedding 端到端验收")
@@ -39,9 +40,43 @@ def test_real_model_http_mcp_restart(postgres_url: str, tmp_path: Path) -> None:
         work = rest.post(
             "/work-imports", files={"file": ("sample.txt", data)}, data={"request_id": str(uuid4())}
         ).json()["work"]["id"]
+
+        async def prepare_annotations() -> None:
+            if kind != "annotation":
+                return
+            async with Client(str(rest.base_url).rstrip("/") + "/mcp") as mcp:
+                sections = (await call(mcp, "source_sections", {"work_id": work}))["items"]
+                for section in sections:
+                    paragraphs = (
+                        await call(
+                            mcp, "source_paragraphs", {"work_id": work, "section_id": section["id"]}
+                        )
+                    )["items"]
+                    await call(
+                        mcp,
+                        "annotation_create",
+                        {
+                            "work_id": work,
+                            "request_id": str(uuid4()),
+                            "note": "保留标注说明，不作为向量输入",
+                            "source_ranges": [
+                                {
+                                    "work_id": work,
+                                    "section_id": section["id"],
+                                    "start_paragraph_id": paragraphs[0]["id"],
+                                    "end_paragraph_id": paragraphs[-1]["id"],
+                                }
+                            ],
+                        },
+                    )
+
+        asyncio.run(prepare_annotations())
         base = f"/works/{work}"
-        assert rest.get(base + "/semantic-indexes/status").json()["state"] == "missing"
-        args = {"work_id": work, "request_id": str(uuid4())}
+        assert (
+            rest.get(base + "/semantic-indexes/status", params={"kind": kind}).json()["state"]
+            == "missing"
+        )
+        args = {"work_id": work, "kind": kind, "request_id": str(uuid4())}
         unavailable = rest.post(base + "/semantic-indexes", json=args)
         assert unavailable.status_code == 503
         with embedding_server(config):
@@ -55,12 +90,18 @@ def test_real_model_http_mcp_restart(postgres_url: str, tmp_path: Path) -> None:
             batch = {"work_id": work, "index_id": identifier, "request_id": str(uuid4())}
             built = rest.post(base + f"/semantic-indexes/{identifier}/build", json=batch).json()
             assert built["generation_status"] == "ready", built
-            query = {"work_id": work, "query": "暴雨中的夜晚，门外脚步声带来紧张和恐惧", "limit": 1}
+            query = {
+                "work_id": work,
+                "kind": kind,
+                "query": "暴雨中的夜晚，门外脚步声带来紧张和恐惧",
+                "limit": 1,
+            }
             result = rest.post(base + "/semantic-search", json=query).json()
             assert "暴雨" in result["items"][0]["excerpt"], result
             assert result["coverage"] == {
-                "total": 4,
-                "covered": 4,
+                "total": 4 if kind == "fulltext" else 3,
+                "covered": 4 if kind == "fulltext" else 3,
+                **({"stale": 0, "not_indexed": 0} if kind == "annotation" else {}),
                 "blocked": 0,
                 "pending": 0,
                 "complete": True,
@@ -73,16 +114,25 @@ def test_real_model_http_mcp_restart(postgres_url: str, tmp_path: Path) -> None:
                     assert replay_create == created | {"replayed": True}
                     replay_build = await call(mcp, "semantic_index_build", batch)
                     assert replay_build == built | {"replayed": True}
-                    state_args = {"work_id": work, "index_id": identifier}
+                    state_args = {"work_id": work, "kind": kind, "index_id": identifier}
                     status = await call(mcp, "semantic_index_get", state_args)
                     assert (
                         status
                         == rest.get(
-                            base + "/semantic-indexes/status", params={"index_id": identifier}
+                            base + "/semantic-indexes/status",
+                            params={"index_id": identifier, "kind": kind},
                         ).json()
                     )
                     actual = await call(mcp, "source_semantic_search", query)
                     assert actual["items"][0]["source_range"] == ref
+                    if kind == "annotation":
+                        asset = await call(
+                            mcp,
+                            "annotation_get",
+                            {"work_id": work, "annotation_id": actual["items"][0]["annotation_id"]},
+                        )
+                        assert asset["version"] == actual["items"][0]["annotation_version"]
+                        assert asset["source_ranges"][0] == ref
                     assert actual["items"][0]["score"] == pytest.approx(
                         result["items"][0]["score"], abs=1e-5
                     )
@@ -91,7 +141,7 @@ def test_real_model_http_mcp_restart(postgres_url: str, tmp_path: Path) -> None:
                     await call(
                         mcp,
                         "source_semantic_search",
-                        query | {"kind": "annotation"},
+                        query | {"kind": "unsupported"},
                         code="INVALID_INPUT",
                     )
                     await call(
@@ -105,7 +155,9 @@ def test_real_model_http_mcp_restart(postgres_url: str, tmp_path: Path) -> None:
             assert rest.get(base + "/file").content == data
             mismatch = rest.post(f"/works/{uuid4()}/semantic-search", json=query)
             assert mismatch.status_code == 422
-        assert rest.get(base + "/semantic-indexes/status").json()["active"]["coverage"]["complete"]
+        assert rest.get(base + "/semantic-indexes/status", params={"kind": kind}).json()["active"][
+            "coverage"
+        ]["complete"]
         assert rest.post(base + "/semantic-search", json=query).status_code == 503
         with embedding_server(config):
             restarted = rest.post(base + "/semantic-search", json=query).json()

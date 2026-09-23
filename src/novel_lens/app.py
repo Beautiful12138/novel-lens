@@ -193,7 +193,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def annotation_search(request: SearchRequest) -> Page[AnnotationSearchHit]:
         return search.annotations(request)
 
-    @app.post("/works/{work_id}/semantic-indexes", summary="显式创建全文语义索引代")
+    @app.post("/works/{work_id}/semantic-indexes", summary="显式创建指定层原文语义索引代")
     def semantic_create(work_id: UUID, request: SemanticCreate) -> SemanticWrite:
         if work_id != request.work_id:
             raise ServiceError("INVALID_INPUT", "路径与请求中的作品 ID 不一致")
@@ -208,7 +208,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/works/{work_id}/semantic-indexes/status", summary="发现索引代与分页读取缺口")
     def semantic_get(
         work_id: UUID,
-        kind: Literal["fulltext"] = "fulltext",
+        kind: Literal["fulltext", "annotation"] = "fulltext",
         index_id: UUID | None = None,
         limit: Annotated[int, Query(ge=1, le=100)] = 100,
         cursor: Annotated[str | None, Query(max_length=2048)] = None,
