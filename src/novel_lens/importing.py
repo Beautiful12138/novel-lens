@@ -3,7 +3,7 @@
 from hashlib import sha256
 from uuid import UUID, uuid4
 
-from sqlalchemy import Connection, select
+from sqlalchemy import Connection, literal_column, select
 from sqlalchemy.exc import IntegrityError
 
 from novel_lens.contracts import ImportOut, Issue, ValidationReport, WorkOut
@@ -51,7 +51,11 @@ class ImportService:
         self, connection: Connection, request_id: UUID, fingerprint: str | None = None
     ) -> ImportOut | None:
         row = (
-            connection.execute(select(works).where(works.c.request_id == request_id))
+            connection.execute(
+                select(literal_column("works.*"))
+                .select_from(works)
+                .where(works.c.request_id == request_id)
+            )
             .mappings()
             .first()
         )
@@ -110,7 +114,7 @@ class ImportService:
                                 len(p.text) for s in parsed.sections for p in s.paragraphs
                             ),
                         )
-                        .returning(works)
+                        .returning(literal_column("*"))
                     )
                     .mappings()
                     .one()

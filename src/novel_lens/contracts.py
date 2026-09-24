@@ -8,6 +8,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 Limit = Annotated[int, Field(ge=1, le=1000)]
 ReadingFormat = Literal["full", "compact"]
+WorkVisibility = Literal["visible", "hidden"]
+WorkFilter = Literal["visible", "hidden", "all"]
 
 
 class RequestModel(BaseModel):
@@ -44,12 +46,19 @@ class WorkOut(BaseModel):
 
     id: UUID
     name: str
+    visibility: WorkVisibility = "visible"
     created_at: datetime
     section_count: int
     paragraph_count: int
     character_count: int
     source_sha256: str
     source_bytes: int
+
+
+class WorkVisibilityUpdate(RequestModel):
+    """绝对状态设置，可安全重复；不改变作品内容。"""
+
+    visibility: WorkVisibility
 
 
 class ImportOut(BaseModel):

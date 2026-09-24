@@ -93,7 +93,7 @@ def test_upgrade_preserves_assets_and_snapshots(
             with database.engine.connect() as connection:
                 assert (
                     connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-                    == "0009"
+                    == "0010"
                 )
                 for table in tables:
                     assert [

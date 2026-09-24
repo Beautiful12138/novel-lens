@@ -74,6 +74,7 @@ from novel_lens.schema import (
     style_guide_ranges,
     style_guides,
     tags,
+    works,
 )
 from novel_lens.schema import (
     annotation_ranges as ranges,
@@ -440,6 +441,14 @@ class AssetService:
                 if self.connection is not None
                 else self.database.engine.begin()
             ) as connection:
+                work_id = getattr(request, "work_id", None)
+                if work_id is not None:
+                    # 锁定作品直到业务及回执提交；不存在时仍由具体操作返回原有资源错误。
+                    connection.execute(
+                        select(works.c.id)
+                        .where(works.c.id == work_id)
+                        .with_for_update(read=True, key_share=True)
+                    ).first()
                 lock_write_batch(connection, request)
                 claimed = connection.execute(
                     insert(requests)

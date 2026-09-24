@@ -17,8 +17,8 @@ from novel_lens.schema import annotations, tags
 
 
 def legacy_columns(table: Table) -> list[Column[Any]]:
-    """旧规格验证比较当时已有字段，新增字段另由 0009 迁移测试核验。"""
-    added = {"tags": {"version", "updated_at"}, "annotations": {"status"}}
+    """旧规格验证比较当时已有字段，新增字段另由对应迁移测试核验。"""
+    added = {"tags": {"version", "updated_at"}, "annotations": {"status"}, "works": {"visibility"}}
     return [c for c in table.c if c.name not in added.get(table.name, set())]
 
 

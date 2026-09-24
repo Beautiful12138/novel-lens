@@ -17,7 +17,7 @@ from novel_lens.cursors import decode_cursor, encode_cursor
 from novel_lens.database import Database
 from novel_lens.embedding import MAX_TOKENS, QUERY_PREFIX, EmbeddingClient, digest
 from novel_lens.errors import ServiceError
-from novel_lens.reading import work_at
+from novel_lens.reading import searchable_work, work_at
 from novel_lens.semantic_chunks import Chunk, next_chunk
 from novel_lens.semantic_contracts import (
     SemanticBuild,
@@ -684,6 +684,8 @@ class SemanticService:
 
     def search(self, request: SemanticSearch) -> SemanticResults:
         """先生成查询向量，再以同一个读快照选择单代并精确排序，不混代补结果。"""
+        with self.database.engine.connect() as connection:
+            searchable_work(connection, request.work_id)
         self.model.verify()
         tokens = self.model.tokenize(QUERY_PREFIX + request.query)
         if len(tokens) > MAX_TOKENS:
@@ -693,7 +695,7 @@ class SemanticService:
             isolation_level="REPEATABLE READ"
         ) as c:
             with c.begin():
-                work = work_at(c, request.work_id)
+                work = searchable_work(c, request.work_id)
                 self._schema(c)
                 head = self._head(c, request.work_id, request.kind)
                 identifier = request.index_id or head["active_index_id"]

@@ -30,7 +30,9 @@ from novel_lens.contracts import (
     ReadRequest,
     SectionOut,
     ValidationReport,
+    WorkFilter,
     WorkOut,
+    WorkVisibilityUpdate,
 )
 from novel_lens.database import Database
 from novel_lens.embedding import EmbeddingClient
@@ -65,6 +67,7 @@ from novel_lens.semantic_contracts import (
     SemanticStatus,
     SemanticWrite,
 )
+from novel_lens.work_management import WorkManagementService
 
 PageLimit = Annotated[Limit, Query()]
 
@@ -75,6 +78,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     database = Database(settings)
     importing = ImportService(database, settings.max_file_bytes)
     reading = ReadingService(database)
+    management = WorkManagementService(database)
     assets = AssetService(database)
     search = SearchService(database)
     semantic = SemanticService(database, EmbeddingClient(settings.embedding_config))
@@ -167,8 +171,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return importing.result(request_id)
 
     @app.get("/works", summary="分页列出作品")
-    def list_works(limit: PageLimit = 100, cursor: str | None = None) -> Page[WorkOut]:
-        return reading.list_works(limit, cursor)
+    def list_works(
+        limit: PageLimit = 100, cursor: str | None = None, visibility: WorkFilter = "visible"
+    ) -> Page[WorkOut]:
+        return reading.list_works(limit, cursor, visibility)
+
+    @app.patch("/works/{work_id}/visibility", summary="屏蔽作品或恢复检索可见性")
+    def set_visibility(work_id: UUID, request: WorkVisibilityUpdate) -> WorkOut:
+        return management.set_visibility(work_id, request.visibility)
+
+    @app.delete("/works/{work_id}", status_code=204, summary="物理删除作品及全部作品内数据")
+    def delete_work(work_id: UUID) -> Response:
+        management.delete(work_id)
+        return Response(status_code=204)
 
     @app.get("/works/{work_id}", summary="读取作品元数据")
     def get_work(work_id: UUID) -> WorkOut:

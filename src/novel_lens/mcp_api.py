@@ -245,7 +245,7 @@ def create_mcp(
         semantic.create,
         "显式创建作品 fulltext 或 annotation 层的原文语义索引代；相同 request_id 重放。"
         "重建保留旧完整代，"
-        "接续用 build，不要重复 create。需本机 embedding 与迁移 0009。",
+        "接续用 build，不要重复 create。需本机 embedding 与迁移 0010。",
         writes=True,
     )
     register(
@@ -296,7 +296,7 @@ def create_mcp(
         "status 默认 active，诊断时可选 withdrawn 或 null（全部）。"
         "按创建时间和 ID 分页，返回说明摘要、版本及首个证据范围；"
         "默认 compact：范围与顶层 work_id 合成 SourceRange；full 含完整元数据。"
-        "通过 annotation_get 读取完整标注。需 PGroonga 与迁移 0009。",
+        "通过 annotation_get 读取完整标注。需 PGroonga 与迁移 0010。",
     )
 
     def file_bytes(path: str) -> bytes:
@@ -332,7 +332,7 @@ def create_mcp(
         ListRequest,
         Page[WorkOut],
         lambda r: reading.list_works(r.limit, r.cursor),
-        "分页列出作品元数据，不返回整本正文。",
+        "分页列出未屏蔽作品的元数据，不返回整本正文；屏蔽与删除由 HTTP 管理端操作。",
     )
     register(
         "work_get",

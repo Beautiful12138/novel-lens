@@ -1,9 +1,10 @@
 """按作品和稳定坐标读取，不隐式扩大到其他作品或 Section。"""
 
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
-from sqlalchemy import Connection, literal, select, tuple_
+from sqlalchemy import Connection, Select, literal, literal_column, select, tuple_
 
 from novel_lens.contracts import (
     CompactContextOut,
@@ -20,6 +21,7 @@ from novel_lens.contracts import (
     ReadRequest,
     SectionOut,
     SourceRange,
+    WorkFilter,
     WorkOut,
 )
 from novel_lens.cursors import decode_cursor, encode_cursor, ordinal_cursor
@@ -29,10 +31,23 @@ from novel_lens.schema import paragraphs, sections, sources, works
 
 
 def work_at(connection: Connection, work_id: UUID) -> WorkOut:
-    row = connection.execute(select(works).where(works.c.id == work_id)).mappings().first()
+    """读取作品元数据，缺失时返回稳定的作品错误。"""
+    # 星号读取实际列，使旧版本迁移样例仍能读取原文；缺省状态由 WorkOut 补全。
+    query: Select[Any] = (
+        select(literal_column("works.*")).select_from(works).where(works.c.id == work_id)
+    )
+    row = connection.execute(query).mappings().first()
     if row is None:
         raise ServiceError("WORK_NOT_FOUND", "作品不存在", 404)
     return WorkOut.model_validate(row)
+
+
+def searchable_work(connection: Connection, work_id: UUID) -> WorkOut:
+    """检索统一检查屏蔽状态；显式 ID 不能绕过，管理读取仍可用。"""
+    work = work_at(connection, work_id)
+    if work.visibility == "hidden":
+        raise ServiceError("WORK_HIDDEN", "作品已屏蔽，请恢复显示后检索", 409)
+    return work
 
 
 def section_at(connection: Connection, work_id: UUID, section_id: UUID) -> SectionOut:
@@ -95,9 +110,14 @@ class ReadingService:
         with self.database.engine.connect() as connection:
             return work_at(connection, work_id)
 
-    def list_works(self, limit: int, cursor: str | None) -> Page[WorkOut]:
+    def list_works(
+        self, limit: int, cursor: str | None, visibility: WorkFilter = "visible"
+    ) -> Page[WorkOut]:
         query = select(works).order_by(works.c.created_at, works.c.id).limit(limit + 1)
-        value = decode_cursor(cursor, "works")
+        if visibility != "all":
+            query = query.where(works.c.visibility == visibility)
+        scope = f"works:{visibility}"
+        value = decode_cursor(cursor, scope)
         if value is not None:
             try:
                 time_text, id_text = value.split("|")
@@ -116,7 +136,7 @@ class ReadingService:
         next_cursor = None
         if len(rows) > limit:
             last = items[-1]
-            next_cursor = encode_cursor("works", f"{last.created_at.isoformat()}|{last.id}")
+            next_cursor = encode_cursor(scope, f"{last.created_at.isoformat()}|{last.id}")
         return Page(items=items, next_cursor=next_cursor)
 
     def list_sections(self, work_id: UUID, limit: int, cursor: str | None) -> Page[SectionOut]:

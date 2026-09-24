@@ -71,7 +71,7 @@ NovelLens 本地应用进程（默认 127.0.0.1:8000）
 | `work_import_validate` | file_path | ValidationReport；ImportService.validate |
 | `work_import` | file_path、request_id | ImportOut；ImportService.import_source |
 | `work_import_get` | request_id | 已提交 ImportOut；ImportService.result |
-| `work_list` | 可选 limit、cursor | Page[WorkOut]；ReadingService.list_works |
+| `work_list` | 可选 limit、cursor | Page[WorkOut]；默认排除屏蔽作品，详见 Spec 11；ReadingService.list_works |
 | `work_get` | work_id | WorkOut；ReadingService.get_work |
 | `source_sections` | work_id；可选 limit、cursor | Page[SectionOut]；ReadingService.list_sections |
 | `source_paragraphs` | work_id、section_id；可选 limit、cursor、format | 完整或精简段落页；ReadingService.list_paragraphs |

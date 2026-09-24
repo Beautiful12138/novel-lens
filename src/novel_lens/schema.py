@@ -29,6 +29,14 @@ works = Table(
     metadata,
     Column("id", Uuid, primary_key=True),
     Column("name", String(256, collation="C"), nullable=False),
+    Column(
+        "visibility",
+        String(16),
+        server_default="visible",
+        nullable=False,
+        comment="检索可见性；屏蔽保留全部数据及名称占用",
+    ),
+    CheckConstraint("visibility IN ('visible', 'hidden')", name="ck_works_visibility"),
     Column("request_id", Uuid, nullable=False),
     Column(
         "fingerprint",

@@ -13,7 +13,7 @@ from novel_lens.contracts import Page, RequestModel
 from novel_lens.cursors import decode_cursor, encode_cursor
 from novel_lens.database import Database
 from novel_lens.errors import ServiceError
-from novel_lens.reading import work_at
+from novel_lens.reading import searchable_work
 from novel_lens.search_contracts import (
     AnnotationSearchHit,
     AnnotationSearchRequest,
@@ -152,7 +152,7 @@ class SearchService:
         """
         params["status"] = status
         with self.database.engine.begin() as connection:
-            work_at(connection, request.work_id)
+            searchable_work(connection, request.work_id)
             ready = connection.execute(
                 text("""
                 SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname='pgroonga')

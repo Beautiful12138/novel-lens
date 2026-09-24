@@ -61,7 +61,7 @@ def test_upgrade_real_0002_records_and_wire_compatibility(
             with database.engine.connect() as connection:
                 assert (
                     connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-                    == "0009"
+                    == "0010"
                 )
                 for name, expected in fixture["tables"].items():
                     actual = (
@@ -69,7 +69,10 @@ def test_upgrade_real_0002_records_and_wire_compatibility(
                         .scalars()
                         .all()
                     )
-                    if name == "tags":
+                    if name == "works":
+                        assert all(r["visibility"] == "visible" for r in actual)
+                        actual = [{k: v for k, v in r.items() if k != "visibility"} for r in actual]
+                    elif name == "tags":
                         assert all(
                             r["version"] == 1 and r["updated_at"] == r["created_at"] for r in actual
                         )
