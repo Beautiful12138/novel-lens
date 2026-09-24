@@ -5,7 +5,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
 
-from novel_lens.contracts import RequestModel, SourceRange
+from novel_lens.contracts import ReadingFormat, RequestModel, SourceRange
 
 GenerationStatus = Literal["building", "ready", "partial", "failed", "superseded"]
 SemanticKind = Literal["fulltext", "annotation"]
@@ -33,6 +33,7 @@ class SemanticGet(RequestModel):
 
 
 class SemanticSearch(RequestModel):
+    format: ReadingFormat = "compact"
     work_id: UUID
     kind: SemanticKind = "fulltext"
     query: str = Field(min_length=1, max_length=8192, strict=True)

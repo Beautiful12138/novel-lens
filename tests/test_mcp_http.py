@@ -58,6 +58,8 @@ def test_real_mcp_roundtrip_and_cross_entry_retry(postgres_url: str, tmp_path: P
                 "source_semantic_search",
                 "source_get_context",
                 "tag_create",
+                "tag_update",
+                "annotation_set_status",
                 "tag_get",
                 "tag_list",
                 "tag_search",
@@ -118,9 +120,9 @@ def test_real_mcp_roundtrip_and_cross_entry_retry(postgres_url: str, tmp_path: P
             )
             assert [s["ordinal"] for s in page["items"] + rest_page["items"]] == [1, 2, 3]
             args = {"work_id": work_id, "section_id": section["id"]}
-            first = await call(mcp, "source_paragraphs", args | {"limit": 1})
+            first = await call(mcp, "source_paragraphs", args | {"limit": 1, "format": "full"})
             following = await call(
-                mcp, "source_paragraphs", args | {"cursor": first["next_cursor"]}
+                mcp, "source_paragraphs", args | {"cursor": first["next_cursor"], "format": "full"}
             )
             paragraphs = first["items"] + following["items"]
             for paragraph in paragraphs:
@@ -130,13 +132,21 @@ def test_real_mcp_roundtrip_and_cross_entry_retry(postgres_url: str, tmp_path: P
                 "start_paragraph_id": paragraphs[0]["id"],
                 "end_paragraph_id": paragraphs[-1]["id"],
             }
-            read = await call(mcp, "source_read", {"source_range": source_range, "limit": 1})
+            read = await call(
+                mcp, "source_read", {"source_range": source_range, "limit": 1, "format": "full"}
+            )
             assert read["items"] == paragraphs[:1]
             assert read["actual_range"]["end_paragraph_id"] == paragraphs[0]["id"]
             context = await call(
                 mcp,
                 "source_get_context",
-                args | {"paragraph_id": paragraphs[1]["id"], "before": 100, "after": 100},
+                args
+                | {
+                    "paragraph_id": paragraphs[1]["id"],
+                    "before": 100,
+                    "after": 100,
+                    "format": "full",
+                },
             )
             assert context["items"] == paragraphs
             assert context["at_section_start"] and context["at_section_end"]
@@ -186,9 +196,9 @@ def test_real_mcp_roundtrip_and_cross_entry_retry(postgres_url: str, tmp_path: P
             assert (await call(mcp, "work_import_get", {"request_id": key}))["work"] == saved[
                 "work"
             ]
-            assert (await call(mcp, "source_paragraphs", saved["args"]))["items"] == saved[
-                "paragraphs"
-            ]
+            assert (await call(mcp, "source_paragraphs", saved["args"] | {"format": "full"}))[
+                "items"
+            ] == saved["paragraphs"]
             source.write_bytes(data + b"changed")
             await call(
                 mcp,
@@ -213,7 +223,7 @@ def test_discovery_without_database_and_http_guards(tmp_path: Path) -> None:
 
         async def exercise() -> None:
             async with Client(str(rest.base_url).rstrip("/") + "/mcp") as mcp:
-                assert len((await mcp.list_tools()).tools) == 46
+                assert len((await mcp.list_tools()).tools) == 48
                 await call(mcp, "work_list", {}, code="DATABASE_UNAVAILABLE")
                 # 文件可以直接读取，后续重名预检仍需数据库。
                 await call(
@@ -280,6 +290,12 @@ def test_file_errors_and_oversize_result(postgres_url: str, tmp_path: Path) -> N
                 mcp,
                 "source_paragraphs",
                 {"work_id": work["id"], "section_id": section["id"], "limit": 1},
+                code="RESULT_TOO_LARGE",
+            )
+            await call(
+                mcp,
+                "source_paragraphs",
+                {"work_id": work["id"], "section_id": section["id"], "format": "compact"},
                 code="RESULT_TOO_LARGE",
             )
             assert rest.get(f"/works/{work['id']}/file").content == huge.read_bytes()

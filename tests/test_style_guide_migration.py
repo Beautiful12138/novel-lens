@@ -6,9 +6,9 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from conftest import ROOT, temporary_database
+from legacy_asset_seed import create_annotation, create_tag, legacy_columns
 from pydantic import SecretStr
 from sqlalchemy import select, text
-from test_assets import create_annotation, create_tag
 from test_entities_relations import entity, relation
 from test_style_guides import guide_request
 
@@ -77,7 +77,9 @@ def test_upgrade_preserves_assets_and_snapshots(
             ]
             with database.engine.connect() as connection:
                 before = {
-                    t.name: [dict(r) for r in connection.execute(select(t)).mappings()]
+                    t.name: [
+                        dict(r) for r in connection.execute(select(*legacy_columns(t))).mappings()
+                    ]
                     for t in tables
                 }
                 snapshots = [
@@ -91,11 +93,12 @@ def test_upgrade_preserves_assets_and_snapshots(
             with database.engine.connect() as connection:
                 assert (
                     connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-                    == "0008"
+                    == "0009"
                 )
                 for table in tables:
                     assert [
-                        dict(r) for r in connection.execute(select(table)).mappings()
+                        dict(r)
+                        for r in connection.execute(select(*legacy_columns(table))).mappings()
                     ] == before[table.name]
             for snapshot in snapshots:
                 assert assets.write_result(snapshot.request_id) == snapshot

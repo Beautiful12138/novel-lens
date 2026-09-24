@@ -23,7 +23,7 @@ WITH normalized_ranges AS (
     JOIN sections s ON s.id=r.section_id AND s.work_id=a.work_id
     JOIN paragraphs p0 ON p0.id=r.start_paragraph_id AND p0.section_id=s.id
     JOIN paragraphs p1 ON p1.id=r.end_paragraph_id AND p1.section_id=s.id
-    WHERE a.work_id=:work
+    WHERE a.work_id=:work AND a.status='active'
 ), range_sets AS (
     SELECT annotation_id,jsonb_agg(ref ORDER BY section_order,lo,hi) AS ranges
     FROM normalized_ranges GROUP BY annotation_id
@@ -31,7 +31,7 @@ WITH normalized_ranges AS (
     SELECT a.id AS annotation_id,a.version AS annotation_version,r.ranges,
         encode(sha256(convert_to(w.source_sha256 || r.ranges::text,'UTF8')),'hex') AS evidence_id
     FROM annotations a JOIN works w ON w.id=a.work_id
-    JOIN range_sets r ON r.annotation_id=a.id WHERE a.work_id=:work
+    JOIN range_sets r ON r.annotation_id=a.id WHERE a.work_id=:work AND a.status='active'
 )
 """
 

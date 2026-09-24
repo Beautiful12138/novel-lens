@@ -407,6 +407,10 @@ class AnalysisService:
                 match item.operation:
                     case "tag_create":
                         writer.create_tag(item.input)
+                    case "tag_update":
+                        writer.update_tag(item.input)
+                    case "annotation_set_status":
+                        writer.set_annotation_status(item.input)
                     case "annotation_create":
                         writer.create_annotation(item.input)
                     case "annotation_update":

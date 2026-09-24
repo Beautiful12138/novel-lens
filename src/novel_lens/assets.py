@@ -24,6 +24,7 @@ from novel_lens.asset_contracts import (
     AnnotationGet,
     AnnotationList,
     AnnotationOut,
+    AnnotationSetStatus,
     AnnotationSummary,
     AnnotationUpdate,
     AssetWriteOut,
@@ -53,6 +54,7 @@ from novel_lens.asset_contracts import (
     TagList,
     TagOut,
     TagSearch,
+    TagUpdate,
 )
 from novel_lens.contracts import ListRequest, Page, SourceRange
 from novel_lens.cursors import decode_cursor, encode_cursor, ordinal_cursor
@@ -308,10 +310,13 @@ def page_rows(
     request: ListRequest,
 ) -> tuple[list[RowMapping], str | None]:
     """创建顺序游标绑定查询类型和全部过滤条件，分页大小不属于过滤条件。"""
-    filters = request.model_dump(mode="json", exclude={"limit", "cursor"})
+    filters = request.model_dump(mode="json", exclude={"limit", "cursor", "format"})
     # 空实体过滤保留 0002 游标摘要，非空过滤必须参与范围绑定。
     if isinstance(request, AnnotationList) and not request.entity_ids:
         filters.pop("entity_ids")
+    if isinstance(request, AnnotationList) and request.status == "active":
+        # 原有游标继续表示默认有效集合；撤回和全部状态拥有独立过滤摘要。
+        filters.pop("status")
     scope = type(request).__name__ + ":" + sha256(compact(filters).encode()).hexdigest()
     after = decode_cursor(request.cursor, scope)
     if after is not None:
@@ -340,6 +345,8 @@ def page_rows(
 
 type WriteRequest = (
     TagCreate
+    | TagUpdate
+    | AnnotationSetStatus
     | AnnotationCreate
     | EntityCreate
     | RelationCreate
@@ -364,7 +371,7 @@ def lock_write_batch(connection: Connection, request: WriteRequest) -> None:
     for value in values:
         if isinstance(value, TagCreate):
             resources.append(f"tag:{value.namespace}:{value.name}")
-        for field in ("annotation_id", "entity_id", "relation_id", "job_id"):
+        for field in ("tag_id", "annotation_id", "entity_id", "relation_id", "job_id"):
             identifier = getattr(value, field, None)
             if identifier is not None:
                 resources.append(f"{field}:{identifier}")
@@ -388,14 +395,7 @@ class AssetService:
 
     def _write(
         self,
-        request: TagCreate
-        | AnnotationCreate
-        | EntityCreate
-        | RelationCreate
-        | RelationSetStatus
-        | StyleGuideCreate
-        | AnalysisJobCreate
-        | AnalysisJobModify,
+        request: WriteRequest,
         operation: str,
         action: Callable[[Connection], BaseModel],
     ) -> AssetWriteOut:
@@ -589,6 +589,46 @@ class AssetService:
                 raise ServiceError("TAG_NOT_FOUND", "标签不存在", 404)
             return tag_out(row)
 
+    def update_tag(self, request: TagUpdate) -> AssetWriteOut:
+        """保留共享 ID 和命名空间；名称冲突或版本冲突时全部回滚。"""
+
+        def action(connection: Connection) -> TagOut:
+            row = (
+                connection.execute(
+                    select(tags).where(tags.c.id == request.tag_id).with_for_update()
+                )
+                .mappings()
+                .first()
+            )
+            if row is None:
+                raise ServiceError("TAG_NOT_FOUND", "标签不存在", 404)
+            if row["version"] != request.expected_version:
+                raise ServiceError(
+                    "VERSION_CONFLICT",
+                    "标签已被修改，请重新读取",
+                    409,
+                    {"current_version": row["version"]},
+                )
+            updated = (
+                connection.execute(
+                    tags.update()
+                    .where(tags.c.id == request.tag_id)
+                    .values(
+                        name=request.name,
+                        description=request.description,
+                        aliases=request.aliases,
+                        version=request.expected_version + 1,
+                        updated_at=func.clock_timestamp(),
+                    )
+                    .returning(tags)
+                )
+                .mappings()
+                .one()
+            )
+            return tag_out(updated)
+
+        return self._write(request, "tag_update", action)
+
     def list_tags(self, request: TagList) -> Page[TagOut]:
         query = select(tags)
         if request.namespace is not None:
@@ -757,6 +797,49 @@ class AssetService:
                 raise ServiceError("ANNOTATION_NOT_FOUND", "指定作品中不存在该标注", 404)
             return annotation_out(connection, row)
 
+    def set_annotation_status(self, request: AnnotationSetStatus) -> AssetWriteOut:
+        """状态修订与内容写入锁定同一主行，不删除证据、不隐式改变其他结论。"""
+
+        def action(connection: Connection) -> AnnotationOut:
+            row = (
+                connection.execute(
+                    select(annotations)
+                    .where(
+                        annotations.c.id == request.annotation_id,
+                        annotations.c.work_id == request.work_id,
+                    )
+                    .with_for_update()
+                )
+                .mappings()
+                .first()
+            )
+            if row is None:
+                raise ServiceError("ANNOTATION_NOT_FOUND", "指定作品中不存在该标注", 404)
+            if row["version"] != request.expected_version:
+                raise ServiceError(
+                    "VERSION_CONFLICT",
+                    "标注已被修改，请重新读取",
+                    409,
+                    {"current_version": row["version"]},
+                )
+            updated = (
+                connection.execute(
+                    annotations.update()
+                    .where(annotations.c.id == request.annotation_id)
+                    .values(
+                        status=request.status,
+                        version=request.expected_version + 1,
+                        updated_at=func.clock_timestamp(),
+                    )
+                    .returning(annotations)
+                )
+                .mappings()
+                .one()
+            )
+            return annotation_out(connection, updated)
+
+        return self._write(request, "annotation_set_status", action)
+
     def list_annotations(self, request: AnnotationList) -> Page[AnnotationSummary]:
         """在数据库投影摘要，不把整页完整 Note 或正文加载后再截断。"""
         first_range = (
@@ -792,6 +875,7 @@ class AssetService:
             annotations.c.id,
             annotations.c.work_id,
             annotations.c.version,
+            annotations.c.status,
             annotations.c.created_at,
             annotations.c.updated_at,
             first_range.label("first_source_range"),
@@ -801,6 +885,8 @@ class AssetService:
             func.substr(annotations.c.note, 1, 200).label("note_preview"),
             func.coalesce(func.length(annotations.c.note) > 200, False).label("note_truncated"),
         ).where(annotations.c.work_id == request.work_id)
+        if request.status is not None:
+            query = query.where(annotations.c.status == request.status)
         with (
             self.database.engine.connect().execution_options(
                 isolation_level="REPEATABLE READ"

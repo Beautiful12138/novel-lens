@@ -4,6 +4,7 @@ import json
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+from types import UnionType
 from typing import Any
 from uuid import UUID
 
@@ -27,9 +28,10 @@ from novel_lens.asset_contracts import (
     AnalysisJobSummary,
     AnalysisJobUpdate,
     AnnotationCreate,
-    AnnotationGet,
     AnnotationList,
     AnnotationOut,
+    AnnotationRead,
+    AnnotationSetStatus,
     AnnotationSummary,
     AnnotationUpdate,
     AssetWriteGet,
@@ -61,16 +63,21 @@ from novel_lens.asset_contracts import (
     TagList,
     TagOut,
     TagSearch,
+    TagUpdate,
 )
 from novel_lens.assets import AssetService
 from novel_lens.config import Settings
 from novel_lens.contracts import (
+    CompactContextOut,
+    CompactParagraphPage,
+    CompactReadOut,
     ContextOut,
     ContextRequest,
     ImportOut,
     ListRequest,
     Page,
     ParagraphOut,
+    ReadingFormat,
     ReadOut,
     ReadRequest,
     RequestModel,
@@ -82,9 +89,26 @@ from novel_lens.embedding import EmbeddingClient
 from novel_lens.errors import ServiceError, database_error
 from novel_lens.importing import ImportService
 from novel_lens.local_files import read_source
+from novel_lens.query_views import (
+    CompactAnnotationOut,
+    CompactAnnotationPage,
+    CompactAnnotationResults,
+    CompactSemanticResults,
+    CompactSourceResults,
+    annotation_list_view,
+    annotation_search_view,
+    annotation_view,
+    semantic_search_view,
+    source_search_view,
+)
 from novel_lens.reading import ReadingService
 from novel_lens.search import SearchService
-from novel_lens.search_contracts import AnnotationSearchHit, SearchRequest, SourceSearchHit
+from novel_lens.search_contracts import (
+    AnnotationSearchHit,
+    AnnotationSearchRequest,
+    SearchRequest,
+    SourceSearchHit,
+)
 from novel_lens.semantic import SemanticService
 from novel_lens.semantic_contracts import (
     SemanticBuild,
@@ -123,6 +147,7 @@ class SectionsRequest(ListRequest):
 
 class ParagraphsRequest(SectionsRequest):
     section_id: UUID
+    format: ReadingFormat = "compact"
 
 
 class ContextToolRequest(ContextRequest):
@@ -179,7 +204,7 @@ def create_mcp(
     def register[T: BaseModel](
         name: str,
         request: type[T],
-        response: type[BaseModel],
+        response: type[BaseModel] | UnionType,
         handler: Callable[[T], BaseModel],
         description: str,
         *,
@@ -220,7 +245,7 @@ def create_mcp(
         semantic.create,
         "显式创建作品 fulltext 或 annotation 层的原文语义索引代；相同 request_id 重放。"
         "重建保留旧完整代，"
-        "接续用 build，不要重复 create。需本机 embedding 与迁移 0008。",
+        "接续用 build，不要重复 create。需本机 embedding 与迁移 0009。",
         writes=True,
     )
     register(
@@ -243,31 +268,35 @@ def create_mcp(
     register(
         "source_semantic_search",
         SemanticSearch,
-        SemanticResults,
-        semantic.search,
+        SemanticResults | CompactSemanticResults,
+        lambda r: semantic_search_view(semantic.search(r), r.work_id, r.kind, r.format),
         "在指定作品、指定层的单个索引代内按自然语言查询候选；返回实际 SourceRange，"
         "用 source_read 回读。默认只查完整索引；allow_partial=true 才允许部分覆盖。"
         "分数不是文学质量；kind 支持 fulltext 和 annotation；标注命中带当前版本，"
-        "须 annotation_get 回读。",
+        "须 annotation_get 回读。默认 compact：范围与顶层 work_id 合成 SourceRange；"
+        "full 另含索引元信息，覆盖与截断提示两种格式均保留。",
     )
     register(
         "source_search",
         SearchRequest,
-        Page[SourceSearchHit],
-        search.source,
+        Page[SourceSearchHit] | CompactSourceResults,
+        lambda r: source_search_view(search.source(r), r.work_id, r.format),
         "在指定作品的自然段原文中匹配 1–8 个普通关键词，all/any 默认 all。"
         "中文支持单字与连续词，ASCII 按词且忽略大小写；不解释查询表达式。"
         "按原文顺序分页，返回原文摘要和 SourceRange；无标注也可命中。"
+        "默认 compact：范围与顶层 work_id 合成 SourceRange；full 含完整元数据。"
         "需 PGroonga 与迁移 0006；未启用返回 SEARCH_UNAVAILABLE。",
     )
     register(
         "annotation_search",
-        SearchRequest,
-        Page[AnnotationSearchHit],
-        search.annotations,
+        AnnotationSearchRequest,
+        Page[AnnotationSearchHit] | CompactAnnotationResults,
+        lambda r: annotation_search_view(search.annotations(r), r.work_id, r.format),
         "在指定作品的 Annotation.note 中匹配普通关键词，all/any 默认 all。"
+        "status 默认 active，诊断时可选 withdrawn 或 null（全部）。"
         "按创建时间和 ID 分页，返回说明摘要、版本及首个证据范围；"
-        "通过 annotation_get 读取完整标注。需 PGroonga 与迁移 0006。",
+        "默认 compact：范围与顶层 work_id 合成 SourceRange；full 含完整元数据。"
+        "通过 annotation_get 读取完整标注。需 PGroonga 与迁移 0009。",
     )
 
     def file_bytes(path: str) -> bytes:
@@ -322,23 +351,31 @@ def create_mcp(
     register(
         "source_paragraphs",
         ParagraphsRequest,
-        Page[ParagraphOut],
-        lambda r: reading.list_paragraphs(r.work_id, r.section_id, r.limit, r.cursor),
-        "分页读取同一 Section 的完整自然段及字节位置；按需设置较小 limit。",
+        Page[ParagraphOut] | CompactParagraphPage,
+        lambda r: reading.list_paragraphs(r.work_id, r.section_id, r.limit, r.cursor, r.format),
+        "分页读取同一 Section 的完整自然段；next_cursor 用于续读。"
+        "阅读优先 format=compact，保留段落 ID、序号、正文和顶层归属；"
+        "actual_range 两端与顶层 work_id、section_id 合成 SourceRange。"
+        "显式 full 另含逐段字节位置。",
     )
     register(
         "source_read",
         ReadRequest,
-        ReadOut,
+        ReadOut | CompactReadOut,
         lambda r: reading.read(r.source_range.work_id, r),
-        "读取同作品同 Section 的含两端段落范围，返回请求范围、本页实际范围及续读游标。",
+        "读取同作品同 Section 的含两端段落范围，返回请求范围、本页实际范围及续读游标。"
+        "limit 只控制分页，不扩大引用范围。阅读优先 format=compact，范围两端与顶层"
+        "work_id、section_id 合成 SourceRange；显式 full 另含逐段字节位置。",
     )
     register(
         "source_get_context",
         ContextToolRequest,
-        ContextOut,
+        ContextOut | CompactContextOut,
         lambda r: reading.context(r.work_id, r),
-        "以一段为锚补读前后正文，不跨 Section；before / after 各为 0–100。",
+        "以一段为锚补读前后正文，不跨 Section；before / after 各为 0–100 段，"
+        "固定小窗口不保证场景完整，按实际内容决定是否继续补读。"
+        "阅读优先 format=compact，actual_range 两端与顶层 work_id、section_id 合成"
+        " SourceRange；显式 full 另含逐段字节位置。",
     )
 
     register(
@@ -352,6 +389,17 @@ def create_mcp(
     )
     register(
         "tag_get", TagGet, TagOut, lambda r: assets.get_tag(r.tag_id), "读取完整标签定义和别名。"
+    )
+    register(
+        "tag_update",
+        TagUpdate,
+        AssetWriteOut,
+        assets.update_tag,
+        "按 expected_version 修改共享标签的 name、description、aliases，三项完整替换；"
+        "namespace 和 ID 不变。影响所有作品对该标签的理解，请先判断是否仍为同一概念。"
+        "保存 request_id，同键同输入重试。",
+        writes=True,
+        destructive=True,
     )
     register(
         "tag_list", TagList, Page[TagOut], assets.list_tags, "分页列出共享标签，可按命名空间过滤。"
@@ -378,6 +426,7 @@ def create_mcp(
         AssetWriteOut,
         assets.update_annotation,
         "按 expected_version 完整替换引用、标签和说明；清空传 [] 或 null。"
+        "保留当前撤回状态，恢复需 annotation_set_status。"
         "entity_ids 省略保留现有关联，显式 [] 清空；实体必须属于同作品。"
         "保存 request_id，超时先查询，同键重试不会再次修改。",
         writes=True,
@@ -385,17 +434,32 @@ def create_mcp(
     )
     register(
         "annotation_get",
-        AnnotationGet,
-        AnnotationOut,
-        assets.get_annotation,
-        "读取指定作品标注的当前完整说明及引用；按引用另调 source_read 核验正文。",
+        AnnotationRead,
+        AnnotationOut | CompactAnnotationOut,
+        lambda r: annotation_view(assets.get_annotation(r), r.format),
+        "读取指定作品标注的当前状态、完整说明及引用；withdrawn 不作为有效结论。"
+        "默认 compact 保留完整说明和所有证据，范围与顶层 work_id 合成 SourceRange；"
+        "修改前显式 full 读取完整详情，按引用另调 source_read 核验正文。",
+    )
+    register(
+        "annotation_set_status",
+        AnnotationSetStatus,
+        AssetWriteOut,
+        assets.set_annotation_status,
+        "按 expected_version 撤回或恢复标注：status=withdrawn 或 active。保留证据与说明，"
+        "撤回后默认列表、说明搜索及标注语义查询排除；不改变原文、其他结论或任务进度。"
+        "保存 request_id，同键同输入重试。",
+        writes=True,
+        destructive=True,
     )
     register(
         "annotation_list",
         AnnotationList,
-        Page[AnnotationSummary],
-        assets.list_annotations,
-        "按作品、范围相交及全部指定标签和实体筛选摘要；note_preview 不是完整说明。",
+        Page[AnnotationSummary] | CompactAnnotationPage,
+        lambda r: annotation_list_view(assets.list_annotations(r), r.work_id, r.format),
+        "按作品、范围相交及全部指定标签和实体筛选摘要；note_preview 不是完整说明。"
+        "status 默认 active，诊断时可选 withdrawn 或 null（全部）。"
+        "默认 compact：范围与顶层 work_id 合成 SourceRange；full 含完整元数据。",
     )
     register(
         "asset_write_get",

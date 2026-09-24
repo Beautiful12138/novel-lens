@@ -1,8 +1,12 @@
 # 10 原文语义检索与 Embedding 部署
 
-状态：两层原文语义索引已实现，整体验收未完成。当前迁移末端为 0008，独立 embedding 入口与全文、标注引用原文两层共用创建、有限批次构建、状态和查询四个 HTTP / MCP 入口。业务接入当前仅接受已验证的 CPU 后端；GPU 兼容性、真实小说效果、长篇成本与实际 AI 宿主仍待验证。第 9—11 节分别记录设计阶段实验与两次增量验收；共享数据库不会随代码自动升级。
+标注纠错增量（0009）：标注层快照、构建、候选和动态覆盖仅包含当前 active 标注，查询在候选限量前排除 withdrawn。撤回保留派生向量，但不再召回；推理后发布前再次校验状态，已撤回来源使本批丢弃。恢复且证据相同时可复用已有向量；未纳入当前代、被跳过或已改引用的来源按实际情况报告 not_indexed、pending 或 stale，需要时显式重建。全文层及原文不受影响，文学关联结论由 AI 复核更新，服务不自动级联修改。当前服务的数据库就绪检查要求 0009，原有 0007／0008 迁移历史不改写。
+
+状态：两层原文语义索引已实现，整体验收未完成。当前迁移末端为 0009，独立 embedding 入口与全文、标注引用原文两层共用创建、有限批次构建、状态和查询四个 HTTP / MCP 入口。业务接入当前仅接受已验证的 CPU 后端；GPU 兼容性、真实小说效果、长篇成本与实际 AI 宿主仍待验证。第 9—11 节分别记录设计阶段实验与两次增量验收；0009 纠错验证见 Spec 04 第 8 节，共享数据库不会随代码自动升级。
 
 ## 1. 目标与范围
+
+开发期阅读格式调整：source_semantic_search 默认 format=compact，显式 full 保留完整结果。compact 顶层返回 work_id、kind、coverage、partial、candidate_window_limited，省略索引 ID、模型契约 ID 和历史代状态；候选保留原文摘录、截断标记、分数、可回读范围，标注层另保留标注 ID、当前版本和范围序号。范围省略重复 work_id，候选省略与顶层相同的 kind；不改变召回、排序、覆盖判断或错误。索引管理及状态接口保持完整。
 
 通过自然语言检索作品中的原文候选，并返回能够重新读取原文的稳定引用。覆盖未标注的全文和已标注的精选原文；语义相似不代表写法适用，文学判断仍由外部 AI 完成。
 
@@ -147,7 +151,7 @@ NovelLens 与 embedding 的主机端口只对本机开放。把 NovelLens HTTP /
 | `semantic_index_create` | `POST /works/{work_id}/semantic-indexes` | `work_id`、`kind=fulltext\|annotation`、`request_id`；契约由服务核验，调用者不能自报向量或模型身份 |
 | `semantic_index_build` | `POST /works/{work_id}/semantic-indexes/{index_id}/build` | `work_id`、`index_id`、`request_id`、`max_items=4`（1—4） |
 | `semantic_index_get` | `GET /works/{work_id}/semantic-indexes/status` | `work_id`、`kind`（默认 fulltext）、`index_id?`、阻塞范围分页 `limit=100`（1—100）、`cursor` |
-| `source_semantic_search` | `POST /works/{work_id}/semantic-search` | `work_id`、`kind=fulltext\|annotation`（默认 fulltext）、`query`、`limit=10`（1—50）、`index_id?`、`allow_partial=false` |
+| `source_semantic_search` | `POST /works/{work_id}/semantic-search` | `work_id`、`kind=fulltext\|annotation`（默认 fulltext）、`query`、`limit=10`（1—50）、`index_id?`、`allow_partial=false`、`format=compact\|full`（默认 compact） |
 
 创建／构建返回 `index_id`、契约 ID、代状态、当前覆盖、active／target 指针、本批结果及是否回执重放。回执重放返回原提交时的快照并标记 `replayed=true`，最新覆盖另行读取状态，不能把旧回执冒充当前状态。即使没有新向量也不能丢失阻塞进度。
 
@@ -183,7 +187,7 @@ NovelLens 与 embedding 的主机端口只对本机开放。把 NovelLens HTTP /
 
 1. 全文增量已实现固定模型适配、切片器、0007 派生表、显式构建／状态及 HTTP / MCP 语义查询。已跑通“导入 → 构建 → 自然语言查询 → source_read 回读”，并验证重试、失败接续、并发、缺口和重建切换。0008 扩展为 fulltext / annotation 两种 kind。
 2. 标注层已接入多范围切片、证据身份、动态覆盖与候选聚合，验证构建期间改范围、只改说明及新增标注的行为。两层工程闭环已实现，真实文学效果与跨设备等完整验收仍未完成。
-3. 全文增量同步公开部署指引、接口说明及两份 Skill，验证边界见第 10 节。标注层扩展现有工具的 kind 与响应字段，保持 46 个工具并同步相应说明。
+3. 全文增量同步公开部署指引、接口说明及两份 Skill，验证边界见第 10 节。标注层扩展现有工具的 kind 与响应字段；0009 纠错增量另增加两个资产工具，当前服务共 48 个工具。
 4. 真实文学样本的段落分布、切片参数与召回效果、全书构建耗时、检索延迟仍待验证。已有样例只覆盖自编文本和机械边界，不把它们当作真实小说效果或容量基准。
 5. CPU / GPU 及跨设备向量一致性、其他平台启动方案继续等待实机验证。线程数不进入模型身份，但未知后端兼容性不能仅凭维度相同放行。
 

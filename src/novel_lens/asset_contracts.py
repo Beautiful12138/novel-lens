@@ -6,7 +6,7 @@ from uuid import UUID
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
-from novel_lens.contracts import ListRequest, RequestModel, SourceRange
+from novel_lens.contracts import ListRequest, ReadingFormat, RequestModel, SourceRange
 
 MAX_ASSET_RESULT_BYTES = 1024 * 1024
 Nonblank = Annotated[str, Field(pattern=r"^[^\x00]*[^\s\x00][^\x00]*$")]
@@ -32,6 +32,7 @@ def sorted_aliases(values: list[str]) -> list[str]:
 
 TagIds = Annotated[list[UUID], AfterValidator(sorted_ids)]
 Aliases = Annotated[list[Alias], AfterValidator(sorted_aliases)]
+AnnotationStatus = Literal["active", "withdrawn"]
 
 
 class TagCreate(RequestModel):
@@ -46,6 +47,16 @@ class TagGet(RequestModel):
     tag_id: UUID
 
 
+class TagUpdate(TagGet):
+    """修订共享标签的名称、定义与别名，命名空间及引用 ID 保持不变。"""
+
+    request_id: UUID
+    expected_version: int = Field(ge=1)
+    name: Name
+    description: Nonblank
+    aliases: Aliases
+
+
 class TagList(ListRequest):
     namespace: Namespace | None = None
 
@@ -54,7 +65,10 @@ class TagSearch(TagList):
     query: Nonblank
 
 
-class TagOut(BaseModel):
+class LegacyTagOut(BaseModel):
+    """0009 前的标签回执原样恢复，不伪造当前版本。"""
+
+    model_config = ConfigDict(extra="forbid")
     id: UUID
     namespace: str
     name: str
@@ -62,6 +76,11 @@ class TagOut(BaseModel):
     description: str
     aliases: list[str]
     created_at: datetime
+
+
+class TagOut(LegacyTagOut):
+    version: int
+    updated_at: datetime
 
 
 class AnnotationCreate(RequestModel):
@@ -100,11 +119,27 @@ class AnnotationGet(RequestModel):
     annotation_id: UUID
 
 
+class AnnotationSetStatus(AnnotationGet):
+    """撤回或恢复整条标注；与内容修订共用版本，保留全部证据。"""
+
+    request_id: UUID
+    expected_version: int = Field(ge=1)
+    status: AnnotationStatus
+
+
+class AnnotationRead(AnnotationGet):
+    """阅读入口单独声明格式，避免将投影选项带入状态写入与请求指纹。"""
+
+    format: ReadingFormat = "compact"
+
+
 class AnnotationList(ListRequest):
     work_id: UUID
     source_range: SourceRange | None = None
     tag_ids: TagIds = Field(default_factory=list)
     entity_ids: TagIds = Field(default_factory=list)
+    status: AnnotationStatus | None = Field(default="active", description="null 查询全部状态")
+    format: ReadingFormat = "compact"
 
 
 class LegacyAnnotationOut(BaseModel):
@@ -121,10 +156,16 @@ class LegacyAnnotationOut(BaseModel):
     updated_at: datetime
 
 
-class AnnotationOut(LegacyAnnotationOut):
-    """当前标注必须返回实体集合；历史快照通过独立模型原样恢复。"""
+class LegacyEntityAnnotationOut(LegacyAnnotationOut):
+    """0003–0008 带实体但无撤回状态的历史回执。"""
 
     entity_ids: list[UUID]
+
+
+class AnnotationOut(LegacyEntityAnnotationOut):
+    """当前标注包含状态；不得将历史无状态回执当作当前有效结论。"""
+
+    status: AnnotationStatus
 
 
 class AnnotationSummary(BaseModel):
@@ -133,6 +174,7 @@ class AnnotationSummary(BaseModel):
     id: UUID
     work_id: UUID
     version: int
+    status: AnnotationStatus
     created_at: datetime
     updated_at: datetime
     first_source_range: SourceRange
@@ -513,6 +555,16 @@ class TagCreateWrite(RequestModel):
     input: TagCreate
 
 
+class TagUpdateWrite(RequestModel):
+    operation: Literal["tag_update"]
+    input: TagUpdate
+
+
+class AnnotationSetStatusWrite(RequestModel):
+    operation: Literal["annotation_set_status"]
+    input: AnnotationSetStatus
+
+
 class AnnotationCreateWrite(RequestModel):
     operation: Literal["annotation_create"]
     input: AnnotationCreate
@@ -560,6 +612,8 @@ class StyleGuideUpdateWrite(RequestModel):
 
 CheckpointWrite = Annotated[
     TagCreateWrite
+    | TagUpdateWrite
+    | AnnotationSetStatusWrite
     | AnnotationCreateWrite
     | AnnotationUpdateWrite
     | EntityCreateWrite
@@ -611,6 +665,8 @@ class AssetWriteOut(BaseModel):
     request_id: UUID
     operation: Literal[
         "tag_create",
+        "tag_update",
+        "annotation_set_status",
         "annotation_create",
         "annotation_update",
         "entity_create",
@@ -630,7 +686,9 @@ class AssetWriteOut(BaseModel):
     replayed: bool = False
     result: (
         TagOut
+        | LegacyTagOut
         | AnnotationOut
+        | LegacyEntityAnnotationOut
         | LegacyAnnotationOut
         | EntityOut
         | RelationSnapshot

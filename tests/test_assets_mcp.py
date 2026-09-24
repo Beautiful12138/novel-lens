@@ -21,7 +21,7 @@ def test_asset_tools_roundtrip_restart_and_errors(postgres_url: str, tmp_path: P
     async def exercise(rest: httpx.Client) -> dict[str, Any]:
         async with Client(str(rest.base_url).rstrip("/") + "/mcp") as mcp:
             tools = (await mcp.list_tools()).tools
-            assert len(tools) == 46
+            assert len(tools) == 48
             assert all(t.output_schema for t in tools)
             by_name = {t.name: t for t in tools}
             assert by_name["annotation_update"].annotations.destructive_hint  # type: ignore[union-attr]
@@ -80,7 +80,7 @@ def test_asset_tools_roundtrip_restart_and_errors(postgres_url: str, tmp_path: P
             created = await call(mcp, "annotation_create", create)
             annotation = created["result"]
             identifier = dict(work_id=work["id"], annotation_id=annotation["id"])
-            assert await call(mcp, "annotation_get", identifier) == annotation
+            assert await call(mcp, "annotation_get", identifier | {"format": "full"}) == annotation
             summary = (
                 await call(
                     mcp,
@@ -199,7 +199,10 @@ def test_asset_tools_roundtrip_restart_and_errors(postgres_url: str, tmp_path: P
             assert (await call(mcp, "annotation_update", saved["update"]))["result"] == saved[
                 "changed"
             ]
-            assert await call(mcp, "annotation_get", saved["identifier"]) == saved["changed"]
+            assert (
+                await call(mcp, "annotation_get", saved["identifier"] | {"format": "full"})
+                == saved["changed"]
+            )
             assert await call(mcp, "tag_get", {"tag_id": saved["tag"]["id"]}) == saved["tag"]
 
     with running_server(postgres_url, tmp_path, "assets-restart") as rest:

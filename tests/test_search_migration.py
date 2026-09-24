@@ -4,10 +4,10 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from conftest import ROOT, temporary_database
+from legacy_asset_seed import create_annotation, legacy_columns
 from pydantic import SecretStr
 from sqlalchemy import select, text
 from starlette.testclient import TestClient
-from test_assets import create_annotation
 from test_search import import_search_source
 
 from novel_lens.app import create_app
@@ -37,7 +37,7 @@ def test_upgrade_reindex_and_downgrade(postgres_url: str, monkeypatch: pytest.Mo
                 assert client.get(f"/works/{source[0]}").status_code == 200
             with database.engine.connect() as c:
                 before = {
-                    t.name: list(c.execute(select(t)).mappings())
+                    t.name: list(c.execute(select(*legacy_columns(t))).mappings())
                     for t in metadata.sorted_tables
                     if not t.name.startswith("semantic_")
                 }
@@ -53,9 +53,9 @@ def test_upgrade_reindex_and_downgrade(postgres_url: str, monkeypatch: pytest.Mo
                     for name in ["ix_paragraphs_text_search", "ix_annotations_note_search"]:
                         c.execute(text(f"REINDEX INDEX {name}"))
                     for table in metadata.sorted_tables:
-                        assert list(c.execute(select(table)).mappings()) == before.get(
-                            table.name, []
-                        )
+                        assert list(
+                            c.execute(select(*legacy_columns(table))).mappings()
+                        ) == before.get(table.name, [])
                 assert search.source(request) == source_hits
                 assert search.annotations(request) == note_hits
                 command.downgrade(config, "0005")

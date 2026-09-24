@@ -50,8 +50,10 @@ def test_upload_read_download_and_idempotency(client: TestClient) -> None:
     assert [s["ordinal"] for s in sections] == [1, 2, 3]
     assert sections[0]["title"] == sections[1]["title"]
     paragraph_url = f"/works/{work_id}/sections/{sections[0]['id']}/paragraphs"
-    first = client.get(paragraph_url, params={"limit": 1}).json()
-    second = client.get(paragraph_url, params={"limit": 2, "cursor": first["next_cursor"]}).json()
+    first = client.get(paragraph_url, params={"limit": 1, "format": "full"}).json()
+    second = client.get(
+        paragraph_url, params={"limit": 2, "cursor": first["next_cursor"], "format": "full"}
+    ).json()
     paragraphs = first["items"] + second["items"]
     assert [p["ordinal"] for p in paragraphs] == [1, 2, 3]
     assert second["next_cursor"] is None
@@ -59,7 +61,9 @@ def test_upload_read_download_and_idempotency(client: TestClient) -> None:
         position = paragraph["source_position"]
         assert data[position["start_byte"] : position["end_byte"]].decode() == paragraph["text"]
     assert work["character_count"] == sum(len(p["text"]) for p in paragraphs) + len("末段")
-    empty = client.get(f"/works/{work_id}/sections/{sections[1]['id']}/paragraphs").json()
+    empty = client.get(
+        f"/works/{work_id}/sections/{sections[1]['id']}/paragraphs", params={"format": "full"}
+    ).json()
     assert empty == {"items": [], "next_cursor": None}
     replay = client.post(
         "/work-imports",
@@ -69,7 +73,7 @@ def test_upload_read_download_and_idempotency(client: TestClient) -> None:
     assert replay.status_code == 200
     assert replay.json()["replayed"] is True
     assert replay.json()["work"] == work
-    assert client.get(paragraph_url).json()["items"] == paragraphs
+    assert client.get(paragraph_url, params={"format": "full"}).json()["items"] == paragraphs
     assert client.get(f"/work-imports/{result['request_id']}").json()["work"] == work
     conflict = client.post(
         "/work-imports",
@@ -118,7 +122,9 @@ def test_ranges_context_and_scope_isolation(client: TestClient) -> None:
     result = client.post(read_url, json={"source_range": source_range, "limit": 2}).json()
     assert result["items"] == paragraphs[:2]
     assert result["actual_range"]["end_paragraph_id"] == paragraphs[1]["id"]
-    assert result["requested_range"] == source_range
+    assert {"work_id": result["work_id"], "section_id": result["section_id"]} | result[
+        "requested_range"
+    ] == source_range
     last = client.post(
         read_url, json={"source_range": source_range, "cursor": result["next_cursor"]}
     ).json()

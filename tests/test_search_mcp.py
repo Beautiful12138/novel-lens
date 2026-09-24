@@ -21,7 +21,7 @@ def test_search_mcp_http_parity(postgres_url: str, tmp_path: Path) -> None:
         async with Client(str(rest.base_url).rstrip("/") + "/mcp") as mcp:
             source = await call(mcp, "source_search", arguments)
             assert source == rest.post("/source/search", json=arguments).json()
-            ref = source["items"][0]["source_range"]
+            ref = {"work_id": source["work_id"]} | source["items"][0]["source_range"]
             read = await call(mcp, "source_read", {"source_range": ref})
             assert read["items"][0]["text"] == "张三望着月光"
             created = await call(
@@ -39,7 +39,9 @@ def test_search_mcp_http_parity(postgres_url: str, tmp_path: Path) -> None:
             assert hits == rest.post("/annotations/search", json=arguments).json()
             identifier = hits["items"][0]["annotation_id"]
             full = await call(
-                mcp, "annotation_get", dict(work_id=work["id"], annotation_id=identifier)
+                mcp,
+                "annotation_get",
+                dict(work_id=work["id"], annotation_id=identifier, format="full"),
             )
             assert full == created["result"]
             for tool, path in [

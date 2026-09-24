@@ -6,12 +6,14 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
 
-from novel_lens.contracts import RequestModel, SourceRange
+from novel_lens.asset_contracts import AnnotationStatus
+from novel_lens.contracts import ReadingFormat, RequestModel, SourceRange
 
 Term = Annotated[str, Field(strict=True, min_length=1, max_length=128)]
 
 
 class SearchRequest(RequestModel):
+    format: ReadingFormat = "compact"
     work_id: UUID
     terms: list[Term] = Field(min_length=1, max_length=8, strict=True)
     match: Literal["all", "any"] = "all"
@@ -25,6 +27,12 @@ class SearchRequest(RequestModel):
         if any(not value.strip() or "\x00" in value for value in values):
             raise ValueError("关键词不得为空白或包含 NUL")
         return sorted({value.strip() for value in values})
+
+
+class AnnotationSearchRequest(SearchRequest):
+    """默认只找有效标注；诊断撤回记录可指定 withdrawn 或 null。"""
+
+    status: AnnotationStatus | None = "active"
 
 
 class SearchExcerpt(BaseModel):
@@ -51,6 +59,7 @@ class AnnotationSearchHit(BaseModel):
     work_id: UUID
     annotation_id: UUID
     version: int
+    status: AnnotationStatus
     created_at: datetime
     first_source_range: SourceRange
     source_range_count: int

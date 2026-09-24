@@ -74,13 +74,15 @@ NovelLens 本地应用进程（默认 127.0.0.1:8000）
 | `work_list` | 可选 limit、cursor | Page[WorkOut]；ReadingService.list_works |
 | `work_get` | work_id | WorkOut；ReadingService.get_work |
 | `source_sections` | work_id；可选 limit、cursor | Page[SectionOut]；ReadingService.list_sections |
-| `source_paragraphs` | work_id、section_id；可选 limit、cursor | Page[ParagraphOut]；ReadingService.list_paragraphs |
-| `source_read` | source_range；可选 limit、cursor | ReadOut；从 source_range.work_id 确定作品，调用 ReadingService.read |
-| `source_get_context` | work_id、section_id、paragraph_id；可选 before、after | ContextOut；ReadingService.context |
+| `source_paragraphs` | work_id、section_id；可选 limit、cursor、format | 完整或精简段落页；ReadingService.list_paragraphs |
+| `source_read` | source_range；可选 limit、cursor、format | 完整或精简范围页；从 source_range.work_id 确定作品，调用 ReadingService.read |
+| `source_get_context` | work_id、section_id、paragraph_id；可选 before、after、format | 完整或精简上下文；ReadingService.context |
 
 SourceRange 的 work_id、section_id、start_paragraph_id、end_paragraph_id 均必填。before / after 默认 0，各为 0–100，不跨 Section。工具名以此表为准，不同时注册点号别名或同义工具。
 
 读取结果沿用 Spec 02 的字段、分页游标与实际范围，不擅自总结正文、合并段落、改写位置或扩展到其他作品。空列表与资源不存在保持区别。
+
+上述三个原文工具支持 Spec 02 的 `format=full|compact`，默认 compact 供 AI 连续阅读，字节定位显式使用 full。工具发现应声明两种成功输出及错误结构；1 MiB 上限按所选格式的最终业务对象计量。工具说明须区分分页上限和读取范围：增大 limit 不会越过 SourceRange，before / after 是段落数，不保证场景完整。
 
 工具注解按实际副作用设置：只有 work_import 会写入数据库，其余工具不修改小说或业务数据。work_import 不覆盖作品，幂等性以相同 request_id 和相同字节为前提；工具描述必须说明重试方式。注解只是客户端提示，不替代运行时校验和数据库约束。
 
@@ -145,6 +147,7 @@ request_id 由调用方在正式导入前生成并保存；MCP 不偷偷生成�
 | M7 | 数据库未配置或不可用时 /health 和工具发现仍可用，相关业务调用返回安全错误；stdout 无应用输出，stderr 无正文、凭据或 SQL 参数 |
 | M8 | 关闭一个 MCP 客户端后应用、REST 及另一个客户端继续可用；停止应用后生命周期、数据库资源与端口正常释放；受影响的原有回归通过 |
 | M9 | 非回环绑定配置被拒绝；不允许的 Host / Origin 以及超限请求体不能到达工具执行；合法本机客户端无 Origin 时可调用，/mcp 挂载不遮蔽原有路由 |
+| M10 | 三个原文工具默认 compact，与 HTTP 返回一致，保留正文、稳定 ID 和实际范围；可重建 SourceRange 并跨格式续读，显式 full 返回完整字段，空章节、非法格式及结果超限处理正确 |
 
 测试使用独立数据库与小型文件，不导入完整小说、不修改 data/ 内已有素材。Windows 运行应用、客户端连接本机 HTTP MCP 为主要验收环境；如交付 WSL 应用启动示例，必须实际验证该路径，未验证环境不写成已支持。真实 AI 客户端宿主联调与官方协议客户端测试分别记录，不以其中一种代替另一种。
 
@@ -159,6 +162,12 @@ request_id 由调用方在正式导入前生成并保存；MCP 不偷偷生成�
 - 通过真实工具调用验证参数、范围、错误游标、未知字段及 1 MiB 结果上限；验证数据库不可用时仍可发现工具，以及 Host / Origin 拒绝和无 Content-Length 的请求体超限。
 - 真实进程验证 stdout 为空、日志不含测试正文或凭据；通过 Windows Ctrl+Break 正常关闭，观察到应用生命周期关闭完成，随后重新绑定原端口成功。原文事务和并发行为的验证记录见 Spec 02，本次路径调整未修改相关实现。
 - 测试使用当次独立数据库及临时素材，未导入开发小说。此记录仅覆盖 Windows 应用的 HTTP MCP；未验证 WSL 应用的 MCP 接入、实际 AI 客户端宿主、长篇吞吐或创作效果。
+
+2026-09-23（精简阅读增量）：
+
+- 在 WSL 专属 PostgreSQL 18.6 容器及随机测试库中，Windows 应用通过官方 MCP 客户端与真实 HTTP 完成 25 项相关测试，无跳过；覆盖精简格式、原文读取、MCP、进程恢复、请求体限制与原文解析。存在一项既有 Starlette / AnyIO 弃用提示。
+- 验证 full / compact 的正文与稳定 ID 一致、三个入口的 HTTP / MCP 投影一致、范围重建、跨格式续读、空章节与上下文边界，以及非法格式、跨作品 / 章节、反向范围、错误游标和超大段落拒绝。Ruff、格式检查、严格 mypy 和写作 Skill 格式检查通过。
+- 测试记录位于忽略目录 `tmp/compact-reading-tests.xml`；当次测试库、容器、匿名卷和应用进程已回收。没有迁移数据库、写入共享业务库、重启现有联调服务或执行 Git 提交推送。实际 AI 宿主采用精简格式后的读取策略、token 成本和创作效果尚待验证。
 
 ## 9. 官方参考
 

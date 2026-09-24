@@ -136,7 +136,36 @@ def test_real_model_http_mcp_restart(postgres_url: str, tmp_path: Path, kind: st
                     assert actual["items"][0]["score"] == pytest.approx(
                         result["items"][0]["score"], abs=1e-5
                     )
-                    read = await call(mcp, "source_read", {"source_range": ref})
+                    # compact 引用与顶层归属重建，显式 full 保留原完整结果。
+                    expanded = {"work_id": actual["work_id"]} | ref
+                    whole = await call(mcp, "source_semantic_search", query | {"format": "full"})
+                    assert whole["items"][0]["source_range"] == expanded
+                    assert whole["coverage"] == actual["coverage"]
+                    assert whole["partial"] == actual["partial"]
+                    assert whole["candidate_window_limited"] == actual["candidate_window_limited"]
+                    assert whole["items"][0]["excerpt"] == actual["items"][0]["excerpt"]
+                    assert (
+                        whole["items"][0]["excerpt_truncated"]
+                        == actual["items"][0]["excerpt_truncated"]
+                    )
+                    assert "index_id" not in actual and "kind" not in actual["items"][0]
+                    rest_full = rest.post(
+                        base + "/semantic-search", json=query | {"format": "full"}
+                    ).json()
+                    assert rest_full["items"][0]["source_range"] == expanded
+                    await call(
+                        mcp,
+                        "source_semantic_search",
+                        query | {"format": "unknown"},
+                        code="INVALID_INPUT",
+                    )
+                    assert (
+                        rest.post(
+                            base + "/semantic-search", json=query | {"format": "unknown"}
+                        ).status_code
+                        == 422
+                    )
+                    read = await call(mcp, "source_read", {"source_range": expanded})
                     assert read["items"][0]["text"].startswith("　暴雨")
                     await call(
                         mcp,
@@ -161,7 +190,7 @@ def test_real_model_http_mcp_restart(postgres_url: str, tmp_path: Path, kind: st
         assert rest.post(base + "/semantic-search", json=query).status_code == 503
         with embedding_server(config):
             restarted = rest.post(base + "/semantic-search", json=query).json()
-            assert restarted["index_id"] == identifier
+            assert restarted["work_id"] == work and restarted["kind"] == kind
             assert restarted["items"][0]["source_range"] == ref
     for log in tmp_path.glob("*.stderr"):
         assert "暴雨" not in log.read_text(encoding="utf-8")

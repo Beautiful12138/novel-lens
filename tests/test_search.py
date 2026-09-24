@@ -251,7 +251,7 @@ def test_rest_validation_and_result(
             assert response.status_code == 422, response.text
             assert response.json()["code"] == "INVALID_INPUT"
             assert "secret" not in response.text
-    result = client.post("/source/search", json=arguments)
+    result = client.post("/source/search", json=arguments | {"format": "full"})
     assert result.json() == SearchService(database).source(
         SearchRequest.model_validate(arguments)
     ).model_dump(mode="json")

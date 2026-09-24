@@ -6,10 +6,16 @@ from uuid import UUID
 from sqlalchemy import Connection, literal, select, tuple_
 
 from novel_lens.contracts import (
+    CompactContextOut,
+    CompactParagraphOut,
+    CompactParagraphPage,
+    CompactReadOut,
     ContextOut,
     ContextRequest,
     Page,
     ParagraphOut,
+    ParagraphSpan,
+    ReadingFormat,
     ReadOut,
     ReadRequest,
     SectionOut,
@@ -63,6 +69,19 @@ def bounds(work_id: UUID, items: list[ParagraphOut]) -> SourceRange:
         section_id=items[0].section_id,
         start_paragraph_id=items[0].id,
         end_paragraph_id=items[-1].id,
+    )
+
+
+def compact_items(items: list[ParagraphOut]) -> list[CompactParagraphOut]:
+    """仅投影已校验的完整段落，不改变正文或稳定 ID。"""
+    return [CompactParagraphOut(id=p.id, ordinal=p.ordinal, text=p.text) for p in items]
+
+
+def compact_span(source_range: SourceRange) -> ParagraphSpan:
+    """归属由精简响应顶层保留，范围只携带真实端点。"""
+    return ParagraphSpan(
+        start_paragraph_id=source_range.start_paragraph_id,
+        end_paragraph_id=source_range.end_paragraph_id,
     )
 
 
@@ -122,15 +141,29 @@ class ReadingService:
         )
 
     def list_paragraphs(
-        self, work_id: UUID, section_id: UUID, limit: int, cursor: str | None
-    ) -> Page[ParagraphOut]:
+        self,
+        work_id: UUID,
+        section_id: UUID,
+        limit: int,
+        cursor: str | None,
+        format: ReadingFormat = "compact",
+    ) -> Page[ParagraphOut] | CompactParagraphPage:
         scope = f"paragraphs:{work_id}:{section_id}"
         with self.database.engine.connect() as connection:
             section = section_at(connection, work_id, section_id)
             after = ordinal_cursor(cursor, scope, section.paragraph_count)
-            return self._paragraph_page(
+            page = self._paragraph_page(
                 connection, section_id, after + 1, section.paragraph_count, limit, scope
             )
+            if format == "compact":
+                return CompactParagraphPage(
+                    work_id=work_id,
+                    section_id=section_id,
+                    items=compact_items(page.items),
+                    actual_range=compact_span(bounds(work_id, page.items)) if page.items else None,
+                    next_cursor=page.next_cursor,
+                )
+            return page
 
     def _paragraph_page(
         self, connection: Connection, section_id: UUID, start: int, end: int, limit: int, scope: str
@@ -155,7 +188,7 @@ class ReadingService:
             next_cursor=encode_cursor(scope, str(items[-1].ordinal)) if len(rows) > limit else None,
         )
 
-    def read(self, work_id: UUID, request: ReadRequest) -> ReadOut:
+    def read(self, work_id: UUID, request: ReadRequest) -> ReadOut | CompactReadOut:
         source_range = request.source_range
         if source_range.work_id != work_id:
             raise ServiceError("INVALID_RANGE", "路径作品与范围作品不一致")
@@ -179,14 +212,24 @@ class ReadingService:
                 request.limit,
                 scope,
             )
+            actual_range = bounds(work_id, page.items)
+            if request.format == "compact":
+                return CompactReadOut(
+                    work_id=work_id,
+                    section_id=source_range.section_id,
+                    items=compact_items(page.items),
+                    next_cursor=page.next_cursor,
+                    requested_range=compact_span(source_range),
+                    actual_range=compact_span(actual_range),
+                )
             return ReadOut(
                 items=page.items,
                 next_cursor=page.next_cursor,
                 requested_range=source_range,
-                actual_range=bounds(work_id, page.items),
+                actual_range=actual_range,
             )
 
-    def context(self, work_id: UUID, request: ContextRequest) -> ContextOut:
+    def context(self, work_id: UUID, request: ContextRequest) -> ContextOut | CompactContextOut:
         with self.database.engine.connect() as connection:
             section = section_at(connection, work_id, request.section_id)
             anchor = paragraph_at(connection, request.section_id, request.paragraph_id)
@@ -195,6 +238,15 @@ class ReadingService:
                 min(section.paragraph_count, anchor.ordinal + request.after),
             )
             page = self._paragraph_page(connection, request.section_id, start, end, 201, "context")
+            if request.format == "compact":
+                return CompactContextOut(
+                    work_id=work_id,
+                    section_id=request.section_id,
+                    items=compact_items(page.items),
+                    actual_range=compact_span(bounds(work_id, page.items)),
+                    at_section_start=start == 1,
+                    at_section_end=end == section.paragraph_count,
+                )
             return ContextOut(
                 items=page.items,
                 actual_range=bounds(work_id, page.items),

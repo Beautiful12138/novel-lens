@@ -16,12 +16,16 @@ from starlette.responses import JSONResponse
 from novel_lens.assets import AssetService
 from novel_lens.config import Settings
 from novel_lens.contracts import (
+    CompactContextOut,
+    CompactParagraphPage,
+    CompactReadOut,
     ContextOut,
     ContextRequest,
     ImportOut,
     Limit,
     Page,
     ParagraphOut,
+    ReadingFormat,
     ReadOut,
     ReadRequest,
     SectionOut,
@@ -35,9 +39,22 @@ from novel_lens.errors import database_error as public_database_error
 from novel_lens.http import RequestSizeLimit, upload, upload_schema
 from novel_lens.importing import ImportService
 from novel_lens.mcp_api import create_mcp
+from novel_lens.query_views import (
+    CompactAnnotationResults,
+    CompactSemanticResults,
+    CompactSourceResults,
+    annotation_search_view,
+    semantic_search_view,
+    source_search_view,
+)
 from novel_lens.reading import ReadingService
 from novel_lens.search import SearchService
-from novel_lens.search_contracts import AnnotationSearchHit, SearchRequest, SourceSearchHit
+from novel_lens.search_contracts import (
+    AnnotationSearchHit,
+    AnnotationSearchRequest,
+    SearchRequest,
+    SourceSearchHit,
+)
 from novel_lens.semantic import SemanticService
 from novel_lens.semantic_contracts import (
     SemanticBuild,
@@ -165,16 +182,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/works/{work_id}/sections/{section_id}/paragraphs", summary="分页读取完整自然段")
     def list_paragraphs(
-        work_id: UUID, section_id: UUID, limit: PageLimit = 100, cursor: str | None = None
-    ) -> Page[ParagraphOut]:
-        return reading.list_paragraphs(work_id, section_id, limit, cursor)
+        work_id: UUID,
+        section_id: UUID,
+        limit: PageLimit = 100,
+        cursor: str | None = None,
+        format: ReadingFormat = "compact",
+    ) -> Page[ParagraphOut] | CompactParagraphPage:
+        return reading.list_paragraphs(work_id, section_id, limit, cursor, format)
 
     @app.post("/works/{work_id}/source/read", summary="读取段落范围")
-    def read(work_id: UUID, request: ReadRequest) -> ReadOut:
+    def read(work_id: UUID, request: ReadRequest) -> ReadOut | CompactReadOut:
         return reading.read(work_id, request)
 
     @app.post("/works/{work_id}/source/context", summary="补读同 Section 上下文")
-    def context(work_id: UUID, request: ContextRequest) -> ContextOut:
+    def context(work_id: UUID, request: ContextRequest) -> ContextOut | CompactContextOut:
         return reading.context(work_id, request)
 
     @app.get("/works/{work_id}/file", summary="下载原上传字节", response_class=Response)
@@ -186,12 +207,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
     @app.post("/source/search", summary="在指定作品内检索原文关键词")
-    def source_search(request: SearchRequest) -> Page[SourceSearchHit]:
-        return search.source(request)
+    def source_search(request: SearchRequest) -> Page[SourceSearchHit] | CompactSourceResults:
+        return source_search_view(search.source(request), request.work_id, request.format)
 
     @app.post("/annotations/search", summary="在指定作品内检索写法说明关键词")
-    def annotation_search(request: SearchRequest) -> Page[AnnotationSearchHit]:
-        return search.annotations(request)
+    def annotation_search(
+        request: AnnotationSearchRequest,
+    ) -> Page[AnnotationSearchHit] | CompactAnnotationResults:
+        return annotation_search_view(search.annotations(request), request.work_id, request.format)
 
     @app.post("/works/{work_id}/semantic-indexes", summary="显式创建指定层原文语义索引代")
     def semantic_create(work_id: UUID, request: SemanticCreate) -> SemanticWrite:
@@ -224,10 +247,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
     @app.post("/works/{work_id}/semantic-search", summary="在指定作品内查询原文语义候选")
-    def semantic_search(work_id: UUID, request: SemanticSearch) -> SemanticResults:
+    def semantic_search(
+        work_id: UUID,
+        request: SemanticSearch,
+    ) -> SemanticResults | CompactSemanticResults:
         if work_id != request.work_id:
             raise ServiceError("INVALID_INPUT", "路径与请求中的作品 ID 不一致")
-        return semantic.search(request)
+        return semantic_search_view(semantic.search(request), work_id, request.kind, request.format)
 
     # SDK 自带 /mcp 路由，根挂载必须放在所有现有路由后，避免遮蔽 REST。
     app.mount("/", mcp_app)

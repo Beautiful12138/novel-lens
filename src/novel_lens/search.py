@@ -14,7 +14,12 @@ from novel_lens.cursors import decode_cursor, encode_cursor
 from novel_lens.database import Database
 from novel_lens.errors import ServiceError
 from novel_lens.reading import work_at
-from novel_lens.search_contracts import AnnotationSearchHit, SearchRequest, SourceSearchHit
+from novel_lens.search_contracts import (
+    AnnotationSearchHit,
+    AnnotationSearchRequest,
+    SearchRequest,
+    SourceSearchHit,
+)
 
 
 class SourceAfter(RequestModel):
@@ -67,9 +72,19 @@ class SearchService:
         两个固定查询只在字段投影和排序上不同。先物化有界候选，再定位匹配并截取
         200 个原始字符，避免将长段落传回 Python。无法映射命中时返回段首摘要并标记。
         """
+        status = request.status if isinstance(request, AnnotationSearchRequest) else "active"
+        scope_input: list[Any] = [
+            "search-v1",
+            kind,
+            str(request.work_id),
+            request.terms,
+            request.match,
+        ]
+        if kind == "annotation" and status != "active":
+            scope_input.append(status)
         scope = hashlib.sha256(
             json.dumps(
-                ["search-v1", kind, str(request.work_id), request.terms, request.match],
+                scope_input,
                 ensure_ascii=True,
             ).encode()
         ).hexdigest()
@@ -90,7 +105,7 @@ class SearchService:
         else:
             column, index = "a.note", "ix_annotations_note_search"
             table, owner, order = "annotations a", "a.work_id", "created_at, id"
-            fields = "a.id, a.work_id, a.version, a.created_at"
+            fields = "a.id, a.work_id, a.version, a.created_at, a.status"
             seek = "(a.created_at, a.id) > (:created_at, :id)"
             after_model = AnnotationAfter
         if after is not None:
@@ -118,6 +133,7 @@ class SearchService:
             WITH candidates AS MATERIALIZED (
                 SELECT {fields}, {column} AS body FROM {table}
                 WHERE {owner}=:work_id AND ({matches})
+                {"AND a.status=:status" if kind == "annotation" and status is not None else ""}
                 {("AND " + seek) if after is not None else ""}
                 ORDER BY {order} LIMIT :limit
             ), located AS MATERIALIZED (
@@ -127,13 +143,14 @@ class SearchService:
             )
             SELECT {", ".join("c." + v.strip() for v in order.split(","))},
                 c.work_id,
-                {("c.section_id, c.section_title," if kind == "source" else "c.version,")}
+                {("c.section_id, c.section_title," if kind == "source" else "c.version, c.status,")}
                 substr(body, greatest(coalesce(position, 0)-40, 0)+1, 200) AS excerpt_text,
                 greatest(coalesce(position, 0)-40, 0) AS excerpt_start,
                 char_length(body) AS body_length, position IS NOT NULL AS match_located
                 {"" if kind == "source" else ", " + _ANNOTATION_RANGES}
             FROM located c ORDER BY {order}
         """
+        params["status"] = status
         with self.database.engine.begin() as connection:
             work_at(connection, request.work_id)
             ready = connection.execute(

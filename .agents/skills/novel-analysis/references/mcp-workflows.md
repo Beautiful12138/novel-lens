@@ -8,6 +8,7 @@
 - MCP 成功结果从 structuredContent 读取；isError=true 时按 code 分支，不能因有 JSON 返回就视为成功。资产和分析任务写入返回 request_id、operation、status=completed、replayed、result；这里的 completed 表示请求完成，不表示分析任务已完成。作品导入使用下表中的独立返回结构。
 - 普通查询分页使用 limit、cursor，默认 100，最大 1000；source_search / annotation_search 默认 20、最大 100。next_cursor 非 null 表示尚有续页；续页保持原过滤条件。候选查询可在证据充分后停止，但不能声称未读取的页没有其他结果。完整进度核验和全范围阅读须处理必要的全部页。
 - ID 使用服务返回的 UUID。SourceRange 为 `{work_id, section_id, start_paragraph_id, end_paragraph_id}`，包含两端且不能跨 Section。范围列表可引用同作品多个 Section。
+- 原文读取、两类关键词搜索、语义搜索、标注列表和详情默认 format="compact"；需要完整元数据或准备修改标注时显式 "full"。精简搜索／标注中的每个范围需补上同一响应顶层 work_id；精简原文读取的范围需补上顶层 work_id 和 section_id。重建后才可传给 source_read、补读或写入，不能凭缩短结构猜坐标。格式不改变正文、完整说明、状态、截断提示或分页。
 - 写入前生成并保留 request_id 和原参数用于恢复，不把整份小说或完整请求写入日志。新操作使用新键；结果不明的原操作保留原键原输入。
 - 任务和资产各有自己的版本，不混用。说明文本不得全空白或包含 NUL；可空说明用 null，清空集合用 []。不把字符串数字或 true 当作版本整数。
 
@@ -23,7 +24,7 @@
 | 获取段落与坐标 | `source_paragraphs({work_id, section_id, limit, cursor})` | items 已包含完整段落 text 和真实 id；无需为了重复阅读再调用 source_read |
 | 按范围读取 | `source_read({source_range, limit, cursor})` | 使用实际返回的 actual_range 和 items；requested_range 可能大于本页范围 |
 | 补读上下文 | `source_get_context({work_id, section_id, paragraph_id, before, after})` | before / after 各为 0–100；结果不跨 Section，需要跨章时重新查目录和坐标 |
-| 定位原文字词 | `source_search({work_id, terms, match?, limit?, cursor?})` | 返回单段 source_range、paragraph_id 和原文 excerpt；无标注也可命中，再按范围或上下文核对 |
+| 定位原文字词 | `source_search({work_id, terms, match?, limit?, cursor?, format?})` | 返回单段 source_range 和原文 excerpt；精简范围补上顶层 work_id，start_paragraph_id 即补读锚点；无标注也可命中 |
 | 查已有写法说明 | `annotation_search({work_id, terms, match?, limit?, cursor?})` | 只匹配 Annotation.note，返回 annotation_id、版本、摘要及首个证据；用 annotation_get 读完整资产 |
 
 全文关键词 terms 为 1–8 个普通文本词，每词最多 128 字符；不解释查询表达式。match 为 all / any，默认 all，all 的词必须在同一段或同一条说明内命中。中文支持单字、连续词，ASCII 按词且忽略大小写，兼容字符会归一化。结果按原文顺序或标注创建顺序排列，不按相关度排名。excerpt 最多 200 字符，match_located=false 表示未定位命中、仅返回段首摘要；摘要不能代替完整证据。SEARCH_UNAVAILABLE 表示当前服务未启用全文能力，改用已有坐标和资产查询，不自行升级服务。搜索不能代替目标范围的完整深读，也不自动推进 Coverage。
@@ -59,19 +60,19 @@ recovery 必须包含 next_action，可包含 facts=`[{note, source_ranges}]`、
 
 参考查询默认只读。用户明确要求构建索引时，才用 `semantic_index_create({work_id, kind?, request_id})` 获得顶层 index_id，再分批 `semantic_index_build({work_id, index_id, request_id, max_items?})`，max_items 默认 4、范围 1—4。每个新批次用新请求键，超时保留原键和参数重试；replayed 是原批次快照，最新状态用 get 读取。不将索引工具放入 analysis_checkpoint.writes。
 
-building 继续构建，failed 修复原因后接续原代；ready 表示曾完整发布，还须检查当前 coverage.complete，partial 为扫描完但存在缺口，superseded 的代不再构建。新会话从 get 恢复 target，不为接续重复 create。指定 index_id 的 get 可用 limit / cursor 分页读取 blocked 范围。allow_partial 默认 false，仅在任务允许接受缺口时显式设 true，并说明 coverage 与 partial；重建时默认仍可查询证据有效且当前完整的旧 active。标注命中带 annotation_id、annotation_version、range_ordinal，需 annotation_get 回读说明及全部证据。annotation 的覆盖按当前标注统计，stale 为过期引用、not_indexed 为新增但未纳入本代的标注；二者需显式新建代，不能靠接续旧代消除。只改说明、标签或引用数组顺序可复用当前向量。batch_discarded>0 表示推理期间引用变化使整批被丢弃；用新请求键接续，服务会跳过过期快照。
+building 继续构建，failed 修复原因后接续原代；ready 表示曾完整发布，还须检查当前 coverage.complete，partial 为扫描完但存在缺口，superseded 的代不再构建。新会话从 get 恢复 target，不为接续重复 create。指定 index_id 的 get 可用 limit / cursor 分页读取 blocked 范围。allow_partial 默认 false，仅在任务允许接受缺口时显式设 true，并说明 coverage 与 partial；重建时默认仍可查询证据有效且当前完整的旧 active。标注命中带 annotation_id、annotation_version、range_ordinal，需 annotation_get 回读说明及全部证据。annotation 的覆盖只按当前 active 标注统计，stale 为过期引用、not_indexed 为新增但未纳入本代的标注；二者需显式新建代，不能靠接续旧代消除。只改说明、标签或引用数组顺序可复用当前向量。batch_discarded>0 表示推理期间引用变化使整批被丢弃；用新请求键接续，服务会跳过过期快照。
 
 缺少配置、端点不可用、迁移未就绪或契约不符时报告对应错误，不自行启动服务、迁移数据库或更换模型；可使用既有关键词和坐标入口。无候选、部分覆盖或 Top-K 窗口限制都不证明全文不存在相关写法。
 
 ## 资产选择与写入参数
 
-先查候选，再按 ID 取详情；不要从摘要重建完整资产后覆盖它。
+先查候选，再按 ID 取详情；不要从摘要重建完整资产后覆盖它。标注阅读可使用默认 compact，修改前调用 annotation_get 时显式 format="full"，取得全部当前字段与完整引用。
 
 | 对象 | 查找与读取 | 新建 / 修订的关键参数 |
 | --- | --- | --- |
-| Tag | `tag_search({query, namespace?, limit?, cursor?})`、`tag_get({tag_id})` | create：request_id、namespace、name、description，可选 aliases；名称冲突后查定义决定是否复用 |
+| Tag | `tag_search({query, namespace?, limit?, cursor?})`、`tag_get({tag_id})` | create：request_id、namespace、name、description，可选 aliases；update：request_id、tag_id、expected_version、name、description、aliases，命名空间不变；名称冲突后查定义决定是否复用 |
 | Entity | `entity_search({work_id, query, type?, limit?, cursor?})`、`entity_get({work_id, entity_id})` | create：request_id、work_id、type、canonical_name，可选 aliases、note；update 增 entity_id、expected_version，aliases 与 note 必填 |
-| Annotation | `annotation_list({work_id, source_range?, tag_ids?, entity_ids?, limit?, cursor?})` → `annotation_get({work_id, annotation_id})` | create：request_id、work_id、source_ranges，可选 tag_ids、entity_ids、note；update 增 annotation_id、expected_version，tag_ids 与 note 必填 |
+| Annotation | `annotation_list({work_id, source_range?, tag_ids?, entity_ids?, status?, limit?, cursor?})` → `annotation_get({work_id, annotation_id})` | create：request_id、work_id、source_ranges，可选 tag_ids、entity_ids、note；update 增 annotation_id、expected_version，tag_ids 与 note 必填 |
 | Relation | `relation_search({work_id, query?, relation_type?, source_range?, tag_ids?, entity_ids?, status?, limit?, cursor?})` → `relation_get({work_id, relation_id})` → `relation_expand({work_id, relation_id, expected_version, limit?, cursor?})` | create：request_id、work_id、title、relation_type、note、nodes，可选 tag_ids、entity_ids；nodes 至少两处不同引用，每项为 `{source_range, role?}`；update 增 relation_id、expected_version，tag_ids / entity_ids 必填 |
 | StyleGuide | `style_guide_get({work_id})` | create：request_id、work_id、scope_note、entries；update 增 expected_version，整体替换 scope_note 与 entries |
 
@@ -80,12 +81,14 @@ building 继续构建，failed 修复原因后接续原代；ready 表示曾完�
 - tag_search / entity_search 是字面子串查询；Relation.query 搜索关系元信息，不能当作原文全文检索。annotation_list 不接受 query；多个 tag_ids 或 entity_ids 要求全部匹配，替代条件应分别查再去重。
 - Entity.type 仅 character、location、item、organization、concept；同名不保证同一身份。Tag 跨作品共享，其他对象与引用均须属于当前 work_id。
 - annotation_update 的 source_ranges、tag_ids、note 完整替换；entity_ids **省略保留**，显式 [] 清空。Entity 和 Relation 修订也应先读完整当前数据，不能只发送想改的一个字段。
+- 标注 list / search 默认 status="active"；诊断撤回标注时显式传 status="withdrawn" 或 null（全部），保持分页过滤一致。get 返回当前 status。`annotation_set_status({request_id, work_id, annotation_id, expected_version, status})` 撤回／恢复标注，与内容修订共用版本；普通 update 不恢复。撤回后默认列表、说明搜索和标注语义召回排除，原文仍可读。旧服务无此工具时说明能力缺口，不以清空标签或说明冒充撤回。
+- tag_update 的 name、description、aliases 全量替换，aliases=[] 清空；先读取最新 version。仅修正同一共享概念，新概念另建标签并按实际需要重新打标；不自动迁移其他作品。旧标签回执可能没有 version，旧标注回执可能没有 status，均需 get 当前对象，不能从历史缺失字段推断当前状态。
 - Relation 查询默认 active；诊断撤回关系时显式 status="withdrawn" 或 null。关系 get 不含节点；expand 绑定当前关系版本。调整内容不自动恢复撤回状态；明确撤回/恢复使用 `relation_set_status({request_id, work_id, relation_id, expected_version, status})`，status 为 withdrawn / active。
 - StyleGuide.entries 每项为 `{title, kind, description, applicability, source_ranges}`，kind 为 baseline / variation / exception，每项至少一处证据。entries=[] 允许暂不保留结论；scope_note 仍说明实际分析范围和局限。更新不是追加，先保留仍成立的条目。
 
 ## checkpoint 与完成
 
-在同一批次中，将本批尚需保存的 tag_create、annotation_create/update、entity_create/update、relation_create/update/set_status、style_guide_create/update 操作放入 writes。每项结构是 `{operation, input}`。外层及所有子 request_id 互不重复；输入中的资产版本与外层任务版本各自独立。
+在同一批次中，将本批尚需保存的 tag_create/update、annotation_create/update/set_status、entity_create/update、relation_create/update/set_status、style_guide_create/update 操作放入 writes。每项结构是 `{operation, input}`。外层及所有子 request_id 互不重复；输入中的资产版本与外层任务版本各自独立。标签全库共享，即使通过作品任务提交，修改也会影响其他作品对该标签的理解。
 
 批内没有临时 ID。需引用新的 Tag / Entity 时，先通过独立工具创建并取得 result.id，再准备其他成果。可以将先前结果不明的子写入以原键原输入放入批次恢复；若后项失败，保留此前已经提交的成果，回滚本批新内容。
 

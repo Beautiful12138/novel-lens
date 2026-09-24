@@ -219,7 +219,7 @@ def test_0008_roundtrip_preserves_fulltext_and_assets(monkeypatch: pytest.Monkey
                 with pytest.raises(Exception) as not_ready:
                     service.get(SemanticGet(work_id=work, kind="annotation"))
                 assert getattr(not_ready.value, "code", None) == "SEMANTIC_SCHEMA_NOT_READY"
-                command.upgrade(config, "0008")
+                command.upgrade(config, "head")
                 command.check(config)
                 assert full_rows() == before
                 assert service.search(SemanticSearch(work_id=work, query="原文")).index_id == full

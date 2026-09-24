@@ -7,6 +7,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 Limit = Annotated[int, Field(ge=1, le=1000)]
+ReadingFormat = Literal["full", "compact"]
 
 
 class RequestModel(BaseModel):
@@ -94,6 +95,7 @@ class ReadRequest(RequestModel):
     source_range: SourceRange
     limit: Limit = 100
     cursor: str | None = None
+    format: ReadingFormat = "compact"
 
 
 class ReadOut(Page[ParagraphOut]):
@@ -106,11 +108,53 @@ class ContextRequest(RequestModel):
     paragraph_id: UUID
     before: int = Field(default=0, ge=0, le=100)
     after: int = Field(default=0, ge=0, le=100)
+    format: ReadingFormat = "compact"
 
 
 class ContextOut(BaseModel):
     items: list[ParagraphOut]
     actual_range: SourceRange
+    at_section_start: bool
+    at_section_end: bool
+
+
+class ParagraphSpan(BaseModel):
+    """精简输出中的含两端范围，作品和章节取自同一响应顶层。"""
+
+    start_paragraph_id: UUID
+    end_paragraph_id: UUID
+
+
+class CompactParagraphOut(BaseModel):
+    """阅读投影保留完整正文与稳定定位，省略字节位置和重复归属。"""
+
+    id: UUID
+    ordinal: int
+    text: str
+
+
+class CompactParagraphPage(Page[CompactParagraphOut]):
+    """归属集中在顶层；空章节返回空 items 和 null 实际范围。"""
+
+    work_id: UUID
+    section_id: UUID
+    actual_range: ParagraphSpan | None
+
+
+class CompactReadOut(CompactParagraphPage):
+    """请求范围与本页范围分离，端点需结合顶层归属用于后续读取。"""
+
+    requested_range: ParagraphSpan
+    actual_range: ParagraphSpan
+
+
+class CompactContextOut(BaseModel):
+    """精简上下文保留章节边界，边界标志不表示文学场景已完整。"""
+
+    work_id: UUID
+    section_id: UUID
+    items: list[CompactParagraphOut]
+    actual_range: ParagraphSpan
     at_section_start: bool
     at_section_end: bool
 

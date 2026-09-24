@@ -62,10 +62,13 @@ class SemanticService:
                 AND to_regclass('semantic_index_items') IS NOT NULL
                 AND to_regclass('semantic_build_receipts') IS NOT NULL
                 AND to_regclass('semantic_annotation_snapshots') IS NOT NULL
+                AND EXISTS (SELECT 1 FROM pg_attribute
+                    WHERE attrelid=to_regclass('annotations') AND attname='status'
+                    AND NOT attisdropped)
         """)
         ).scalar()
         if not ready:
-            raise ServiceError("SEMANTIC_SCHEMA_NOT_READY", "请先安装 vector 并升级至 0008", 503)
+            raise ServiceError("SEMANTIC_SCHEMA_NOT_READY", "请先安装 vector 并升级至 0009", 503)
 
     @contextmanager
     def _locked(self, work_id: UUID, kind: str = "fulltext") -> Iterator[Connection]:

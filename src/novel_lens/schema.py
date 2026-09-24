@@ -109,6 +109,15 @@ tags = Table(
     Column("aliases", JSONB, nullable=False),
     Column("created_at", DateTime(timezone=True), server_default=func.now(), nullable=False),
     UniqueConstraint("namespace", "name", name="uq_tags_name"),
+    Column(
+        "version",
+        Integer,
+        server_default="1",
+        nullable=False,
+        comment="共享标签内容与并发修订的版本条件",
+    ),
+    Column("updated_at", DateTime(timezone=True), server_default=func.now(), nullable=False),
+    CheckConstraint("version > 0", name="ck_tags_version"),
     comment="跨作品共享的标签词表；名称精确唯一，别名允许跨标签重复",
 )
 Index("ix_tags_created_id", tags.c.created_at, tags.c.id)
@@ -123,6 +132,14 @@ annotations = Table(
     Column("created_at", DateTime(timezone=True), server_default=func.now(), nullable=False),
     Column("updated_at", DateTime(timezone=True), server_default=func.now(), nullable=False),
     CheckConstraint("version > 0", name="ck_annotations_version"),
+    Column(
+        "status",
+        String(16),
+        server_default="active",
+        nullable=False,
+        comment="有效或已撤回；撤回保留证据并退出默认检索",
+    ),
+    CheckConstraint("status IN ('active', 'withdrawn')", name="ck_annotations_status"),
     comment="原文入口及可选写法说明；版本条件防止并发覆盖，不代表分析进度",
 )
 Index(
