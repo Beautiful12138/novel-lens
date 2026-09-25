@@ -39,7 +39,9 @@ DELETE_SCOPE = (
     ("asset_write_requests", "response->'result'->>'work_id'=:work_text"),
     ("paragraphs", "section_id IN (SELECT id FROM sections WHERE work_id=:work)"),
     ("sections", "work_id=:work"),
-    ("work_sources", "work_id=:work"),
+    ("part_sources", "part_id IN (SELECT id FROM parts WHERE work_id=:work)"),
+    ("parts", "work_id=:work"),
+    ("catalog_requests", "work_id=:work"),
     ("works", "id=:work"),
 )
 

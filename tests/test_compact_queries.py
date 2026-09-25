@@ -7,17 +7,16 @@ from uuid import uuid4
 
 import httpx
 from mcp import Client
+from part_fixtures import http_file, http_import
 from test_live_http import running_server
 from test_mcp_http import call
 
 
 def test_compact_queries(postgres_url: str, tmp_path: Path) -> None:
     async def exercise(rest: httpx.Client) -> None:
-        data = f"书名：{uuid4()}\n标题：甲\n{'晨光' * 150}\n标题：乙\n晨光照进来。".encode()
-        work = rest.post(
-            "/work-imports",
-            files={"file": ("book.txt", data)},
-            data={"request_id": str(uuid4())},
+        data = f"分部：{uuid4()}\n标题：甲\n{'晨光' * 150}\n标题：乙\n晨光照进来。".encode()
+        work = http_import(
+            rest, files={"file": ("book.txt", data)}, data={"request_id": str(uuid4())}
         ).json()["work"]["id"]
         async with Client(str(rest.base_url).rstrip("/") + "/mcp") as mcp:
             query = {"work_id": work, "terms": ["晨光"], "limit": 1}
@@ -127,7 +126,7 @@ def test_compact_queries(postgres_url: str, tmp_path: Path) -> None:
             assert [
                 v["annotation_id"] for v in (await call(mcp, "annotation_search", query))["items"]
             ] == [created[1]["id"]]
-            assert rest.get(f"/works/{work}/file").content == data
+            assert http_file(rest, work).content == data
 
     with running_server(postgres_url, tmp_path, "compact-queries") as rest:
         asyncio.run(exercise(rest))

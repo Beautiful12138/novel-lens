@@ -65,8 +65,8 @@ class TagSearch(TagList):
     query: Nonblank
 
 
-class LegacyTagOut(BaseModel):
-    """0009 前的标签回执原样恢复，不伪造当前版本。"""
+class TagOut(BaseModel):
+    """共享标签的当前完整数据或提交快照。"""
 
     model_config = ConfigDict(extra="forbid")
     id: UUID
@@ -77,8 +77,6 @@ class LegacyTagOut(BaseModel):
     aliases: list[str]
     created_at: datetime
 
-
-class TagOut(LegacyTagOut):
     version: int
     updated_at: datetime
 
@@ -142,8 +140,8 @@ class AnnotationList(ListRequest):
     format: ReadingFormat = "compact"
 
 
-class LegacyAnnotationOut(BaseModel):
-    """0002 已提交快照的原格式；拒绝新字段，避免新版结果退化为历史格式。"""
+class AnnotationOut(BaseModel):
+    """含实体关联和撤回状态的完整标注。"""
 
     model_config = ConfigDict(extra="forbid")
     id: UUID
@@ -155,15 +153,7 @@ class LegacyAnnotationOut(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-
-class LegacyEntityAnnotationOut(LegacyAnnotationOut):
-    """0003–0008 带实体但无撤回状态的历史回执。"""
-
     entity_ids: list[UUID]
-
-
-class AnnotationOut(LegacyEntityAnnotationOut):
-    """当前标注包含状态；不得将历史无状态回执当作当前有效结论。"""
 
     status: AnnotationStatus
 
@@ -399,15 +389,18 @@ class StyleGuideOut(BaseModel):
     updated_at: datetime
 
 
-# 任务与资产共用写入回执，类型集中定义以保持旧快照解析兼容。
+# 任务与资产共用写入回执，类型集中定义以解析本模型提交的快照。
 class AnalysisTarget(RequestModel):
-    kind: Literal["whole_work", "ranges"]
+    kind: Literal["whole_work", "part", "ranges"]
+    part_id: UUID | None = None
     source_ranges: list[SourceRange] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def valid_target(self) -> Self:
         if (self.kind == "ranges") != bool(self.source_ranges):
             raise ValueError("ranges 须提供范围，whole_work 不接受范围")
+        if (self.kind == "part") != (self.part_id is not None):
+            raise ValueError("仅 part 目标须提供 part_id")
         return self
 
 
@@ -686,10 +679,7 @@ class AssetWriteOut(BaseModel):
     replayed: bool = False
     result: (
         TagOut
-        | LegacyTagOut
         | AnnotationOut
-        | LegacyEntityAnnotationOut
-        | LegacyAnnotationOut
         | EntityOut
         | RelationSnapshot
         | StyleGuideOut

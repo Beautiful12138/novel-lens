@@ -6,6 +6,7 @@ from uuid import UUID
 
 from sqlalchemy import Connection, Select, literal, literal_column, select, tuple_
 
+from novel_lens.catalog import part_at
 from novel_lens.contracts import (
     CompactContextOut,
     CompactParagraphOut,
@@ -16,6 +17,7 @@ from novel_lens.contracts import (
     Page,
     ParagraphOut,
     ParagraphSpan,
+    PartOut,
     ReadingFormat,
     ReadOut,
     ReadRequest,
@@ -27,12 +29,12 @@ from novel_lens.contracts import (
 from novel_lens.cursors import decode_cursor, encode_cursor, ordinal_cursor
 from novel_lens.database import Database
 from novel_lens.errors import ServiceError
-from novel_lens.schema import paragraphs, sections, sources, works
+from novel_lens.schema import paragraphs, parts, sections, sources, works
 
 
 def work_at(connection: Connection, work_id: UUID) -> WorkOut:
     """读取作品元数据，缺失时返回稳定的作品错误。"""
-    # 星号读取实际列，使旧版本迁移样例仍能读取原文；缺省状态由 WorkOut 补全。
+    # 目录元数据不包含原文，读取只需一行。
     query: Select[Any] = (
         select(literal_column("works.*")).select_from(works).where(works.c.id == work_id)
     )
@@ -53,7 +55,9 @@ def searchable_work(connection: Connection, work_id: UUID) -> WorkOut:
 def section_at(connection: Connection, work_id: UUID, section_id: UUID) -> SectionOut:
     row = (
         connection.execute(
-            select(sections).where(sections.c.id == section_id, sections.c.work_id == work_id)
+            select(sections, parts.c.name.label("part_name"))
+            .join(parts, sections.c.part_id == parts.c.id)
+            .where(sections.c.id == section_id, sections.c.work_id == work_id)
         )
         .mappings()
         .first()
@@ -139,15 +143,24 @@ class ReadingService:
             next_cursor = encode_cursor(scope, f"{last.created_at.isoformat()}|{last.id}")
         return Page(items=items, next_cursor=next_cursor)
 
-    def list_sections(self, work_id: UUID, limit: int, cursor: str | None) -> Page[SectionOut]:
-        scope = f"sections:{work_id}"
+    def list_sections(
+        self, work_id: UUID, limit: int, cursor: str | None, part_id: UUID | None = None
+    ) -> Page[SectionOut]:
+        scope = f"sections:{work_id}:{part_id}"
         with self.database.engine.connect() as connection:
             work = work_at(connection, work_id)
+            if part_id is not None:
+                part_at(connection, work_id, part_id)
             after = ordinal_cursor(cursor, scope, work.section_count)
             rows = (
                 connection.execute(
-                    select(sections)
-                    .where(sections.c.work_id == work_id, sections.c.ordinal > after)
+                    select(sections, parts.c.name.label("part_name"))
+                    .join(parts, sections.c.part_id == parts.c.id)
+                    .where(
+                        sections.c.work_id == work_id,
+                        sections.c.ordinal > after,
+                        literal(True) if part_id is None else sections.c.part_id == part_id,
+                    )
                     .order_by(sections.c.ordinal)
                     .limit(limit + 1)
                 )
@@ -274,11 +287,38 @@ class ReadingService:
                 at_section_end=end == section.paragraph_count,
             )
 
-    def file(self, work_id: UUID) -> bytes:
+    def get_part(self, work_id: UUID, part_id: UUID) -> PartOut:
         with self.database.engine.connect() as connection:
-            result = connection.execute(
-                select(sources.c.content).where(sources.c.work_id == work_id)
-            ).scalar_one_or_none()
-            if result is None:
-                raise ServiceError("WORK_NOT_FOUND", "作品不存在", 404)
-            return bytes(result)
+            return part_at(connection, work_id, part_id)
+
+    def list_parts(self, work_id: UUID, limit: int, cursor: str | None) -> Page[PartOut]:
+        """只读分部目录，按不可变追加顺序分页。"""
+        scope = f"parts:{work_id}"
+        with self.database.engine.connect() as connection:
+            work = work_at(connection, work_id)
+            after = ordinal_cursor(cursor, scope, work.part_count)
+            rows = (
+                connection.execute(
+                    select(parts)
+                    .where(parts.c.work_id == work_id, parts.c.ordinal > after)
+                    .order_by(parts.c.ordinal)
+                    .limit(limit + 1)
+                )
+                .mappings()
+                .all()
+            )
+        items = [PartOut.model_validate(row) for row in rows[:limit]]
+        return Page(
+            items=items,
+            next_cursor=encode_cursor(scope, str(items[-1].ordinal)) if len(rows) > limit else None,
+        )
+
+    def file(self, work_id: UUID, part_id: UUID) -> bytes:
+        """下载指定分部的原始上传字节，不能跨作品读取。"""
+        with self.database.engine.connect() as connection:
+            part_at(connection, work_id, part_id)
+            return bytes(
+                connection.execute(
+                    select(sources.c.content).where(sources.c.part_id == part_id)
+                ).scalar_one()
+            )

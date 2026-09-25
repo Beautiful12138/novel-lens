@@ -6,6 +6,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
+from part_fixtures import import_work
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -47,8 +48,8 @@ class DeterministicModel(EmbeddingClient):
 
 
 def imported(database: Database, body: str) -> UUID:
-    data = f"书名：{uuid4()}\n{body}".encode()
-    return ImportService(database, 64 * 1024 * 1024).import_source(data, uuid4()).work.id
+    data = f"分部：{uuid4()}\n{body}".encode()
+    return import_work(ImportService(database, 64 * 1024 * 1024), data, uuid4()).work.id
 
 
 def new_index(service: SemanticService, work: UUID) -> UUID:

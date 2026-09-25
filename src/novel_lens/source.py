@@ -6,7 +6,7 @@ from hashlib import sha256
 
 from novel_lens.contracts import Issue, Position, ValidationReport
 
-RULE_VERSION = "txt-v1"
+RULE_VERSION = "part-txt-v1"
 FORMAT_SPACE = " \t\u3000"
 
 
@@ -65,19 +65,19 @@ def source_lines(data: bytes) -> list[SourceLine]:
 
 def parse_canonical(data: bytes) -> ParsedSource:
     lines = source_lines(data)
-    if not lines or not lines[0].text.startswith("书名："):
+    if not lines or not lines[0].text.startswith("分部："):
         raise SourceFailure(
-            "MISSING_NAME", "首条非空行必须为书名字段", lines[0].position if lines else None
+            "MISSING_NAME", "首条非空行必须为分部字段", lines[0].position if lines else None
         )
     name = lines[0].text[3:]
     if not name or name != name.strip(FORMAT_SPACE) or len(name) > 256:
         raise SourceFailure(
-            "INVALID_NAME", "书名须为 1–256 字符且无首尾格式空白", lines[0].position
+            "INVALID_NAME", "分部须为 1–256 字符且无首尾格式空白", lines[0].position
         )
     parsed = ParsedSource(SourceLine(name, lines[0].position), [])
     for line in lines[1:]:
-        if line.text.startswith("书名："):
-            raise SourceFailure("DUPLICATE_NAME", "一个文件只能有一个书名字段", line.position)
+        if line.text.startswith("分部："):
+            raise SourceFailure("DUPLICATE_NAME", "一个文件只能有一个分部字段", line.position)
         if line.text.startswith("标题："):
             title = line.text[3:]
             if not title or title != title.strip(FORMAT_SPACE):
@@ -90,7 +90,7 @@ def parse_canonical(data: bytes) -> ParsedSource:
     if not parsed.sections:
         raise SourceFailure("MISSING_SECTION", "至少需要一个标题字段")
     if not any(section.paragraphs for section in parsed.sections):
-        raise SourceFailure("EMPTY_BODY", "作品必须有正文")
+        raise SourceFailure("EMPTY_BODY", "分部必须有正文")
     return parsed
 
 

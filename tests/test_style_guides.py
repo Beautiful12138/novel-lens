@@ -6,6 +6,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
+from part_fixtures import import_work
 from sqlalchemy import Connection, select, text
 from sqlalchemy.engine import RowMapping
 from sqlalchemy.exc import DBAPIError
@@ -161,14 +162,9 @@ def test_guide_invalid_ranges_are_atomic(
     request = guide_request(source)
     old = assets.create_style_guide(request).result
     assert isinstance(old, StyleGuideOut)
-    foreign = (
-        ImportService(database, 10000)
-        .import_source(
-            f"书名：{uuid4()}\n标题：外部\n正文".encode(),
-            uuid4(),
-        )
-        .work.id
-    )
+    foreign = import_work(
+        ImportService(database, 10000), f"分部：{uuid4()}\n标题：外部\n正文".encode(), uuid4()
+    ).work.id
     first = source[1][0]
     bad_range = first.model_copy(
         update={

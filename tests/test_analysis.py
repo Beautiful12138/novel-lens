@@ -6,6 +6,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
+from part_fixtures import import_work
 from pydantic import ValidationError
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError, IntegrityError
@@ -504,11 +505,11 @@ def test_concurrent_reverse_batches_and_same_version(
 
 
 def test_empty_sections_and_recovery_references(service: AnalysisService) -> None:
-    work = (
-        ImportService(service.database, 10000)
-        .import_source(f"书名：{uuid4()}\n标题：空\n标题：有文\n一段".encode(), uuid4())
-        .work
-    )
+    work = import_work(
+        ImportService(service.database, 10000),
+        f"分部：{uuid4()}\n标题：空\n标题：有文\n一段".encode(),
+        uuid4(),
+    ).work
     job = create(service, (work.id, []))
     assert job.target_paragraph_count == 1
     ref = service.coverage(CoverageGet(**key(job))).items[0].source_range

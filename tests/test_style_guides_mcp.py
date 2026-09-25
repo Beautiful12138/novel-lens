@@ -7,6 +7,7 @@ from uuid import uuid4
 
 import httpx
 from mcp import Client
+from part_fixtures import http_import
 from test_live_http import running_server
 from test_mcp_http import call
 
@@ -15,16 +16,16 @@ def test_style_guide_tools_and_restart(postgres_url: str, tmp_path: Path) -> Non
     async def exercise(rest: httpx.Client) -> dict[str, Any]:
         async with Client(str(rest.base_url).rstrip("/") + "/mcp") as mcp:
             tools = {t.name: t for t in (await mcp.list_tools()).tools}
-            assert len(tools) == 48
+            assert len(tools) == 53
             assert tools["style_guide_get"].annotations.read_only_hint  # type: ignore[union-attr]
             assert tools["style_guide_update"].annotations.destructive_hint  # type: ignore[union-attr]
-            work = rest.post(
-                "/work-imports",
+            work = http_import(
+                rest,
                 data={"request_id": str(uuid4())},
                 files={
                     "file": (
                         "guide.txt",
-                        f"书名：{uuid4()}\n标题：片段\nprivate-guide-source\n尾段".encode(),
+                        f"分部：{uuid4()}\n标题：片段\nprivate-guide-source\n尾段".encode(),
                     ),
                 },
             ).json()["work"]

@@ -6,6 +6,7 @@ from uuid import uuid4
 
 import httpx
 from mcp import Client
+from part_fixtures import http_import
 from test_live_http import running_server
 from test_mcp_http import call
 from test_search import INVALID_SEARCH
@@ -13,9 +14,9 @@ from test_search import INVALID_SEARCH
 
 def test_search_mcp_http_parity(postgres_url: str, tmp_path: Path) -> None:
     async def exercise(rest: httpx.Client) -> None:
-        data = f"书名：{uuid4()}\n标题：甲\n张三望着月光\n月光很暗\n标题：乙\n月亮".encode()
-        work = rest.post(
-            "/work-imports", files={"file": ("sample.txt", data)}, data={"request_id": str(uuid4())}
+        data = f"分部：{uuid4()}\n标题：甲\n张三望着月光\n月光很暗\n标题：乙\n月亮".encode()
+        work = http_import(
+            rest, files={"file": ("sample.txt", data)}, data={"request_id": str(uuid4())}
         ).json()["work"]
         arguments = dict(work_id=work["id"], terms=["月光"], limit=1)
         async with Client(str(rest.base_url).rstrip("/") + "/mcp") as mcp:

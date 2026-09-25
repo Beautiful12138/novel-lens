@@ -6,6 +6,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
+from part_fixtures import import_work
 from sqlalchemy import Connection, select, text
 from sqlalchemy.engine import RowMapping
 from sqlalchemy.exc import DBAPIError
@@ -147,11 +148,9 @@ def test_entity_identity_search_and_annotation_links(
     ).items == [duplicate]
     with pytest.raises(ServiceError, match="游标"):
         assets.list_entities(EntityList(work_id=work_id, cursor=page.next_cursor))
-    other_work = (
-        ImportService(database, 10000)
-        .import_source(f"书名：{uuid4()}\n标题：章\n段".encode(), uuid4())
-        .work.id
-    )
+    other_work = import_work(
+        ImportService(database, 10000), f"分部：{uuid4()}\n标题：章\n段".encode(), uuid4()
+    ).work.id
     foreign = entity(assets, other_work)
     assert assets.list_entities(EntitySearch(work_id=other_work, query="同名")).items == [foreign]
     with pytest.raises(ServiceError) as absent:

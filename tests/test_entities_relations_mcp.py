@@ -7,6 +7,7 @@ from uuid import uuid4
 
 import httpx
 from mcp import Client
+from part_fixtures import http_file, mcp_import
 from test_live_http import running_server
 from test_mcp_http import call
 
@@ -14,21 +15,19 @@ from test_mcp_http import call
 def test_entity_relation_tools_and_restart(postgres_url: str, tmp_path: Path) -> None:
     novel = tmp_path / "关系样例.txt"
     data = (
-        f"书名：{uuid4()}\n标题：建立\nprivate-relation-source\n第二段\n标题：回收\n末段".encode()
+        f"分部：{uuid4()}\n标题：建立\nprivate-relation-source\n第二段\n标题：回收\n末段".encode()
     )
     novel.write_bytes(data)
 
     async def exercise(rest: httpx.Client) -> dict[str, Any]:
         async with Client(str(rest.base_url).rstrip("/") + "/mcp") as mcp:
             listing = (await mcp.list_tools()).tools
-            assert len(listing) == 48
+            assert len(listing) == 53
             by_name = {t.name: t for t in listing}
             assert by_name["relation_set_status"].annotations.destructive_hint  # type: ignore[union-attr]
-            work = (
-                await call(
-                    mcp, "work_import", {"request_id": str(uuid4()), "file_path": str(novel)}
-                )
-            )["work"]
+            work = (await mcp_import(mcp, {"request_id": str(uuid4()), "file_path": str(novel)}))[
+                "work"
+            ]
             work_id = work["id"]
             sections = (await call(mcp, "source_sections", {"work_id": work_id}))["items"]
             ranges = []
@@ -276,7 +275,7 @@ def test_entity_relation_tools_and_restart(postgres_url: str, tmp_path: Path) ->
                 len((await call(mcp, "entity_list", {"work_id": work_id, "limit": 1}))["items"])
                 == 1
             )
-            assert rest.get(f"/works/{work_id}/file").content == data
+            assert http_file(rest, work_id).content == data
             return dict(
                 identifier=identifier,
                 entity_id=entity_id,

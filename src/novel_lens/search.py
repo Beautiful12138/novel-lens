@@ -9,6 +9,7 @@ from pydantic import AwareDatetime, Field, ValidationError
 from sqlalchemy import text
 
 from novel_lens.asset_contracts import MAX_ASSET_RESULT_BYTES
+from novel_lens.catalog import part_at
 from novel_lens.contracts import Page, RequestModel
 from novel_lens.cursors import decode_cursor, encode_cursor
 from novel_lens.database import Database
@@ -77,6 +78,7 @@ class SearchService:
             "search-v1",
             kind,
             str(request.work_id),
+            str(request.part_id),
             request.terms,
             request.match,
         ]
@@ -91,15 +93,18 @@ class SearchService:
         after = decode_cursor(request.cursor, scope)
         params: dict[str, Any] = {
             "work_id": request.work_id,
+            "part_id": request.part_id,
             "terms": request.terms,
             "limit": request.limit + 1,
         }
         if kind == "source":
             column, index = "p.text", "ix_paragraphs_text_search"
-            table = "paragraphs p JOIN sections s ON s.id=p.section_id"
+            table = (
+                "paragraphs p JOIN sections s ON s.id=p.section_id JOIN parts pt ON pt.id=s.part_id"
+            )
             owner, order = "s.work_id", "section_ordinal, ordinal, id"
             fields = "p.id, s.ordinal AS section_ordinal, p.ordinal, s.title AS section_title"
-            fields += ", s.id AS section_id, s.work_id"
+            fields += ", s.id AS section_id, s.work_id, s.part_id, pt.name AS part_name"
             seek = "(s.ordinal, p.ordinal, p.id) > (:section_ordinal, :ordinal, :id)"
             after_model: type[SourceAfter] | type[AnnotationAfter] = SourceAfter
         else:
@@ -129,10 +134,24 @@ class SearchService:
                 for condition in conditions
             )
             matches = f"{identifier} IN ({union})"
+        part_filter = ""
+        if request.part_id is not None:
+            part_filter = (
+                "AND s.part_id=:part_id"
+                if kind == "source"
+                else "AND EXISTS (SELECT 1 FROM annotation_ranges r "
+                "JOIN sections s ON s.id=r.section_id "
+                "WHERE r.annotation_id=a.id AND s.part_id=:part_id)"
+            )
+        location_fields = (
+            "c.section_id, c.section_title, c.part_id, c.part_name,"
+            if kind == "source"
+            else "c.version, c.status, e.part_id, e.part_name, e.section_title,"
+        )
         query = f"""
             WITH candidates AS MATERIALIZED (
                 SELECT {fields}, {column} AS body FROM {table}
-                WHERE {owner}=:work_id AND ({matches})
+                WHERE {owner}=:work_id AND ({matches}) {part_filter}
                 {"AND a.status=:status" if kind == "annotation" and status is not None else ""}
                 {("AND " + seek) if after is not None else ""}
                 ORDER BY {order} LIMIT :limit
@@ -143,16 +162,18 @@ class SearchService:
             )
             SELECT {", ".join("c." + v.strip() for v in order.split(","))},
                 c.work_id,
-                {("c.section_id, c.section_title," if kind == "source" else "c.version, c.status,")}
+                {location_fields}
                 substr(body, greatest(coalesce(position, 0)-40, 0)+1, 200) AS excerpt_text,
                 greatest(coalesce(position, 0)-40, 0) AS excerpt_start,
                 char_length(body) AS body_length, position IS NOT NULL AS match_located
                 {"" if kind == "source" else ", " + _ANNOTATION_RANGES}
-            FROM located c ORDER BY {order}
+            FROM located c {"" if kind == "source" else _ANNOTATION_LOCATION} ORDER BY {order}
         """
         params["status"] = status
         with self.database.engine.begin() as connection:
             searchable_work(connection, request.work_id)
+            if request.part_id is not None:
+                part_at(connection, request.work_id, request.part_id)
             ready = connection.execute(
                 text("""
                 SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname='pgroonga')
@@ -167,7 +188,7 @@ class SearchService:
             # 缺省的零命中扩展会因查询计划不同而改变结果，必须在当前事务关闭。
             connection.execute(text("SET LOCAL pgroonga.match_escalation_threshold = -1"))
             connection.execute(text("SET LOCAL pgroonga.force_match_escalation = off"))
-            rows = connection.execute(text(query), params).mappings().all()
+            rows = [dict(r) for r in connection.execute(text(query), params).mappings()]
         next_cursor = None
         if len(rows) > request.limit:
             tail = rows[request.limit - 1]
@@ -202,9 +223,20 @@ class SearchService:
 
 # 只投影首个证据及数量；完整标注由 annotation_get 提供，不聚合无限长证据列表。
 _ANNOTATION_RANGES = """
-    (SELECT jsonb_build_object('work_id', r.work_id, 'section_id', r.section_id,
-        'start_paragraph_id', r.start_paragraph_id, 'end_paragraph_id', r.end_paragraph_id)
-     FROM annotation_ranges r WHERE r.annotation_id=c.id ORDER BY r.ordinal LIMIT 1)
-        AS first_source_range,
+    e.first_source_range,
     (SELECT count(*) FROM annotation_ranges r WHERE r.annotation_id=c.id) AS source_range_count
+"""
+
+# 首个符合分部范围的证据和目录名称在同一 SQL 快照中读取，避免逐候选查询。
+_ANNOTATION_LOCATION = """
+    JOIN LATERAL (
+        SELECT rs.part_id, pt.name AS part_name, rs.title AS section_title,
+            jsonb_build_object('work_id', r.work_id, 'section_id', r.section_id,
+                'start_paragraph_id', r.start_paragraph_id,
+                'end_paragraph_id', r.end_paragraph_id) AS first_source_range
+        FROM annotation_ranges r JOIN sections rs ON rs.id=r.section_id
+        JOIN parts pt ON pt.id=rs.part_id
+        WHERE r.annotation_id=c.id AND (CAST(:part_id AS uuid) IS NULL OR rs.part_id=:part_id)
+        ORDER BY r.ordinal LIMIT 1
+    ) e ON TRUE
 """

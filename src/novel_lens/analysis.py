@@ -40,6 +40,7 @@ from novel_lens.assets import (
     range_bounds,
     scoped_row,
 )
+from novel_lens.catalog import part_at
 from novel_lens.contracts import Page, SourceRange
 from novel_lens.cursors import decode_cursor, encode_cursor
 from novel_lens.database import Database
@@ -76,7 +77,9 @@ def normalize_target(
 ) -> list[dict[str, Any]]:
     """固定任务目标，按原文顺序合并同章节重叠或相邻区间。"""
     values: list[dict[str, Any]] = []
-    if target.kind == "whole_work":
+    if target.kind in ("whole_work", "part"):
+        if target.part_id is not None:
+            part_at(connection, work_id, target.part_id)
         first, last = paragraphs.alias(), paragraphs.alias()
         values = [
             dict(row)
@@ -100,7 +103,12 @@ def normalize_target(
                         ),
                     )
                 )
-                .where(sections.c.work_id == work_id)
+                .where(
+                    sections.c.work_id == work_id,
+                    literal(True)
+                    if target.part_id is None
+                    else sections.c.part_id == target.part_id,
+                )
             ).mappings()
         ]
     else:
@@ -181,7 +189,7 @@ def job_out(connection: Connection, row: RowMapping) -> AnalysisJobOut:
     counts = counts_for(connection, [row["id"]])[row["id"]]
     result = AnalysisJobOut(
         **dict(row),
-        target=AnalysisTarget(kind=row["target_kind"], source_ranges=refs),
+        target=AnalysisTarget(kind=row["target_kind"], part_id=row["part_id"], source_ranges=refs),
         counts=counts,
         target_paragraph_count=sum(counts.model_dump().values()),
     )
@@ -281,6 +289,7 @@ class AnalysisService:
                         title=request.title,
                         goal=request.goal,
                         target_kind=request.target.kind,
+                        part_id=request.target.part_id,
                         status="running",
                         recovery=request.recovery.model_dump(mode="json"),
                         completion=None,

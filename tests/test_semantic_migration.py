@@ -8,9 +8,6 @@ from uuid import uuid4
 
 import psycopg
 import pytest
-from alembic import command
-from alembic.config import Config
-from conftest import ROOT, temporary_database
 from psycopg import sql
 from pydantic import SecretStr
 from sqlalchemy import text
@@ -21,52 +18,7 @@ from test_semantic_annotations import annotated_index, annotation, references
 from novel_lens.config import Settings
 from novel_lens.database import Database
 from novel_lens.semantic import SemanticService
-from novel_lens.semantic_contracts import SemanticGet, SemanticSearch
-
-
-def test_upgrade_downgrade_preserves_source(monkeypatch: pytest.MonkeyPatch) -> None:
-    raw = os.environ.get("NOVEL_LENS_TEST_DATABASE_URL")
-    if not raw:
-        pytest.skip("未配置隔离数据库")
-    with temporary_database(raw, "0006") as url:
-        database = Database(Settings.model_construct(database_url=SecretStr(url)))
-        try:
-            work = imported(database, "标题：甲\n迁移前的原文")
-            service = SemanticService(database, DeterministicModel())
-            with pytest.raises(Exception) as not_ready:
-                service.get(SemanticGet(work_id=work))
-            assert getattr(not_ready.value, "code", None) == "SEMANTIC_SCHEMA_NOT_READY"
-            with monkeypatch.context() as patch:
-                patch.setenv("NOVEL_LENS_DATABASE_URL", url)
-                config = Config(str(ROOT / "alembic.ini"))
-                command.upgrade(config, "head")
-                command.check(config)
-                index = new_index(service, work)
-                build(service, work, index)
-                assert service.search(SemanticSearch(work_id=work, query="迁移")).items
-                command.downgrade(config, "0006")
-                with database.engine.connect() as conn:
-                    assert (
-                        conn.execute(text("SELECT text FROM paragraphs")).scalar() == "迁移前的原文"
-                    )
-                    assert (
-                        conn.execute(
-                            text(
-                                "SELECT count(*) FROM pg_extension "
-                                "WHERE extname IN ('pgroonga','vector')"
-                            )
-                        ).scalar()
-                        == 2
-                    )
-                    assert (
-                        conn.execute(text("SELECT to_regclass('semantic_indexes')")).scalar()
-                        is None
-                    )
-                command.upgrade(config, "head")
-                command.check(config)
-                assert service.get(SemanticGet(work_id=work)).state == "missing"
-        finally:
-            database.close()
+from novel_lens.semantic_contracts import SemanticSearch
 
 
 def test_backup_restore_semantic_tables(postgres_url: str, tmp_path: Path) -> None:
@@ -156,75 +108,3 @@ def test_backup_restore_semantic_tables(postgres_url: str, tmp_path: Path) -> No
                 admin.execute(sql.SQL("DROP DATABASE {} WITH (FORCE)").format(sql.Identifier(name)))
     finally:
         database.close()
-
-
-def test_0008_roundtrip_preserves_fulltext_and_assets(monkeypatch: pytest.MonkeyPatch) -> None:
-    """降级只移除标注派生数据；全文向量、历史回执及可变分析资产不受影响。"""
-    raw = os.environ.get("NOVEL_LENS_TEST_DATABASE_URL")
-    if not raw:
-        pytest.skip("未配置隔离数据库")
-    with temporary_database(raw) as url:
-        database = Database(Settings.model_construct(database_url=SecretStr(url)))
-        try:
-            work = imported(database, "标题：甲\n原文保留")
-            a = annotation(database, work, references(database, work))
-            service = SemanticService(database, DeterministicModel())
-            full = new_index(service, work)
-            build(service, work, full)
-            annotated = annotated_index(service, work)
-            build(service, work, annotated)
-
-            def full_rows() -> list[str]:
-                with database.engine.connect() as conn:
-                    return list(
-                        conn.execute(
-                            text("""
-                        SELECT (to_jsonb(i)-'annotation_id'-'evidence_id'-'range_ordinal')::text
-                        FROM semantic_index_items i WHERE index_id=:id ORDER BY id
-                    """),
-                            {"id": full},
-                        )
-                        .scalars()
-                        .all()
-                    )
-
-            before = full_rows()
-            with monkeypatch.context() as patch:
-                patch.setenv("NOVEL_LENS_DATABASE_URL", url)
-                config = Config(str(ROOT / "alembic.ini"))
-                command.check(config)
-                command.downgrade(config, "0007")
-                assert full_rows() == before
-                with database.engine.connect() as conn:
-                    assert (
-                        conn.execute(
-                            text("SELECT version FROM annotations WHERE id=:id"), {"id": a.id}
-                        ).scalar_one()
-                        == 1
-                    )
-                    assert (
-                        conn.execute(
-                            text("SELECT count(*) FROM semantic_indexes WHERE id=:id"),
-                            {"id": annotated},
-                        ).scalar_one()
-                        == 0
-                    )
-                    assert (
-                        conn.execute(
-                            text("SELECT count(*) FROM semantic_build_receipts WHERE index_id=:id"),
-                            {"id": full},
-                        ).scalar_one()
-                        == 1
-                    )
-                with pytest.raises(Exception) as not_ready:
-                    service.get(SemanticGet(work_id=work, kind="annotation"))
-                assert getattr(not_ready.value, "code", None) == "SEMANTIC_SCHEMA_NOT_READY"
-                command.upgrade(config, "head")
-                command.check(config)
-                assert full_rows() == before
-                assert service.search(SemanticSearch(work_id=work, query="原文")).index_id == full
-                assert service.get(SemanticGet(work_id=work, kind="annotation")).state == "missing"
-                rebuilt = annotated_index(service, work)
-                assert build(service, work, rebuilt).coverage.complete
-        finally:
-            database.close()

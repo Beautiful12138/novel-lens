@@ -414,22 +414,13 @@ class AssetService:
                     and "entity_ids" not in item.input.model_fields_set
                 ):
                     payload["input"].pop("entity_ids")
-        contract = "asset-v2"
-        if isinstance(request, TagCreate):
-            contract = "asset-v1"
-        elif isinstance(request, AnnotationCreate):
-            legacy = (
-                "entity_ids" not in request.model_fields_set
-                if isinstance(request, AnnotationUpdate)
-                else not request.entity_ids
-            )
-            if legacy:
-                inputs.pop("entity_ids")
-                contract = "asset-v1"
+        # 省略关联表示保留，与显式空集合的清空操作必须具有不同指纹。
+        if isinstance(request, AnnotationUpdate) and "entity_ids" not in request.model_fields_set:
+            inputs.pop("entity_ids")
         fingerprint = sha256(
             compact(
                 {
-                    "contract": contract,
+                    "contract": "asset-v3",
                     "operation": operation,
                     "input": inputs,
                 }

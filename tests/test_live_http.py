@@ -12,6 +12,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import httpx
+from part_fixtures import http_file, http_import
 
 
 @contextmanager
@@ -81,28 +82,26 @@ def test_restart_preserves_source_ids_and_unreceived_result(
     postgres_url: str, tmp_path: Path
 ) -> None:
     key = str(uuid4())
-    data = f"\ufeff书名：{uuid4()}\r\n标题：开始\r\n　private-novel-body😀 \t\r\n尾段".encode()
+    data = f"\ufeff分部：{uuid4()}\r\n标题：开始\r\n　private-novel-body😀 \t\r\n尾段".encode()
     with running_server(postgres_url, tmp_path, "first") as client:
         # 调用方忽略首次响应，只保存 request_id，模拟提交成功但没有保存返回值。
         assert (
-            client.post(
-                "/work-imports", data={"request_id": key}, files={"file": ("book.txt", data)}
+            http_import(
+                client, data={"request_id": key}, files={"file": ("book.txt", data)}
             ).status_code
             == 201
         )
-        work = client.get(f"/work-imports/{key}").json()["work"]
+        work = client.get(f"/part-imports/{key}").json()["work"]
         work_id = work["id"]
         section = client.get(f"/works/{work_id}/sections").json()["items"][0]
         path = f"/works/{work_id}/sections/{section['id']}/paragraphs"
         paragraphs = client.get(path).json()["items"]
-        assert client.get(f"/works/{work_id}/file").content == data
+        assert http_file(client, work_id).content == data
     with running_server(postgres_url, tmp_path, "second") as client:
-        assert client.get(f"/work-imports/{key}").json()["work"] == work
+        assert client.get(f"/part-imports/{key}").json()["work"] == work
         assert client.get(path).json()["items"] == paragraphs
-        assert client.get(f"/works/{work_id}/file").content == data
-        replay = client.post(
-            "/work-imports", data={"request_id": key}, files={"file": ("book.txt", data)}
-        )
+        assert http_file(client, work_id).content == data
+        replay = http_import(client, data={"request_id": key}, files={"file": ("book.txt", data)})
         assert replay.status_code == 200 and replay.json()["work"] == work
     for label in ["first", "second"]:
         assert (tmp_path / f"{label}.stdout").read_bytes() == b""

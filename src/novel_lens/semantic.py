@@ -13,6 +13,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from novel_lens import semantic_annotations as annotation_index
 from novel_lens.asset_contracts import MAX_ASSET_RESULT_BYTES
+from novel_lens.catalog import part_at
 from novel_lens.cursors import decode_cursor, encode_cursor
 from novel_lens.database import Database
 from novel_lens.embedding import MAX_TOKENS, QUERY_PREFIX, EmbeddingClient, digest
@@ -57,6 +58,7 @@ class SemanticService:
         ready = conn.execute(
             text("""
             SELECT (SELECT extversion='0.8.6' FROM pg_extension WHERE extname='vector')
+                AND to_regclass('parts') IS NOT NULL
                 AND to_regclass('semantic_indexes') IS NOT NULL
                 AND to_regclass('semantic_index_heads') IS NOT NULL
                 AND to_regclass('semantic_index_items') IS NOT NULL
@@ -68,7 +70,9 @@ class SemanticService:
         """)
         ).scalar()
         if not ready:
-            raise ServiceError("SEMANTIC_SCHEMA_NOT_READY", "请先安装 vector 并升级至 0009", 503)
+            raise ServiceError(
+                "SEMANTIC_SCHEMA_NOT_READY", "请先安装 vector 并使用 0011 空库结构", 503
+            )
 
     @contextmanager
     def _locked(self, work_id: UUID, kind: str = "fulltext") -> Iterator[Connection]:
@@ -172,6 +176,7 @@ class SemanticService:
             generation_status=index["status"],
             coverage=self._coverage(conn, index),
             last_error=index["last_error"],
+            source_stale=work_at(conn, index["work_id"]).source_sha256 != index["source_sha256"],
         )
 
     def _write_result(self, conn: Connection, index: dict[str, Any], **batch: Any) -> SemanticWrite:
@@ -345,6 +350,10 @@ class SemanticService:
                 )
                 if receipt:
                     return self._replay(dict(receipt), fingerprint, "response")
+                if work_at(conn, request.work_id).source_sha256 != index["source_sha256"]:
+                    raise ServiceError(
+                        "INDEX_SOURCE_CHANGED", "作品已追加分部，请显式创建新索引代", 409
+                    )
                 if (
                     index["status"] == "superseded"
                     or self._head(conn, request.work_id, kind)["target_index_id"]
@@ -401,7 +410,9 @@ class SemanticService:
                 with conn.begin():
                     work = work_at(conn, request.work_id)
                     if work.source_sha256 != index["source_sha256"]:
-                        raise ServiceError("EMBEDDING_CONTRACT_MISMATCH", "来源身份已改变", 409)
+                        raise ServiceError(
+                            "INDEX_SOURCE_CHANGED", "作品已追加分部，请显式创建新索引代", 409
+                        )
                     discarded = 0
                     identities: dict[UUID, str] = {}
                     if kind == "annotation":
@@ -686,6 +697,8 @@ class SemanticService:
         """先生成查询向量，再以同一个读快照选择单代并精确排序，不混代补结果。"""
         with self.database.engine.connect() as connection:
             searchable_work(connection, request.work_id)
+            if request.part_id is not None:
+                part_at(connection, request.work_id, request.part_id)
         self.model.verify()
         tokens = self.model.tokenize(QUERY_PREFIX + request.query)
         if len(tokens) > MAX_TOKENS:
@@ -704,12 +717,13 @@ class SemanticService:
                 if identifier is None:
                     raise ServiceError("INDEX_NOT_READY", "尚无完整索引，请读取索引状态并构建", 409)
                 index = self._index(c, request.work_id, identifier, request.kind)
-                if (
-                    index["contract_id"] != self.model.contract_id
-                    or index["source_sha256"] != work.source_sha256
-                ):
+                if index["contract_id"] != self.model.contract_id:
                     raise ServiceError(
                         "EMBEDDING_CONTRACT_MISMATCH", "索引与当前模型或来源不匹配", 409
+                    )
+                if index["source_sha256"] != work.source_sha256:
+                    raise ServiceError(
+                        "INDEX_SOURCE_CHANGED", "作品已追加分部，请显式创建新索引代", 409
                     )
                 coverage = self._coverage(c, index)
                 if not coverage.complete and not request.allow_partial:
@@ -725,15 +739,18 @@ class SemanticService:
                                 else ""
                             )
                             + f"""
-                    SELECT i.*, s.ordinal AS section_ordinal,
+                    SELECT i.*, s.ordinal AS section_ordinal, s.part_id,
+                        pt.name AS part_name, s.title AS section_title,
                         {"e.annotation_version," if request.kind == "annotation" else ""}
                         i.embedding <=> CAST(:vector AS vector) AS distance,
                         left(p.text,200) AS excerpt,
                         (length(p.text)>200 OR i.start_ordinal<>i.end_ordinal) AS excerpt_truncated
                     FROM semantic_index_items i JOIN sections s ON s.id=i.section_id
+                        JOIN parts pt ON pt.id=s.part_id
                         JOIN paragraphs p ON p.id=i.start_paragraph_id
                     {annotation_index.VALID_ITEMS_JOIN if request.kind == "annotation" else ""}
                     WHERE i.work_id=:work AND i.index_id=:id AND i.embedding IS NOT NULL
+                    AND (CAST(:part AS uuid) IS NULL OR s.part_id=:part)
                     ORDER BY distance,s.ordinal,i.start_ordinal,i.end_ordinal,i.id LIMIT :limit
                 """
                         ),
@@ -742,6 +759,7 @@ class SemanticService:
                             "work": request.work_id,
                             "id": identifier,
                             "limit": 10 * request.limit + 1,
+                            "part": request.part_id,
                         },
                     )
                     .mappings()
@@ -786,6 +804,9 @@ class SemanticService:
                             candidate_window_limited=len(rows) > 10 * request.limit,
                             items=[
                                 dict(
+                                    part_id=row["part_id"],
+                                    part_name=row["part_name"],
+                                    section_title=row["section_title"],
                                     source_range=self._range(row),
                                     excerpt=row["excerpt"],
                                     excerpt_truncated=row["excerpt_truncated"],

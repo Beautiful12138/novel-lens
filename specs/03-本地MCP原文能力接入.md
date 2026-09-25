@@ -12,11 +12,11 @@
 
 ```text
 NovelLens 本地应用进程（默认 127.0.0.1:8000）
-├─ /health、/works、/work-imports 等现有 REST 路由
+├─ /health、/works、/works/{work_id}/part-imports 等现有 REST 路由
 ├─ /mcp：AI 客户端连接的 Streamable HTTP 端点
 │   └─ 文件工具按路径读取任意目录中有权限访问的普通文件
 └─ 共用 ImportService / ReadingService 和数据库连接池
-    └─ 远程 PostgreSQL（公网直连，密码认证，关闭 TLS）
+    └─ 独立 PostgreSQL（连接与 TLS 按部署环境配置）
 ```
 
 应用与小说文件位于同一主机，文件路径以应用进程看到的文件系统为准；Windows 和 WSL 路径不能直接互换。应用启动一次即可提供两类接口，MCP 不启动第二个业务进程，也不在内部通过 HTTP 请求现有 REST 路由。数据库继续作为独立基础设施运行，“一个服务进程”不表示把 PostgreSQL 嵌入 Python 进程。
@@ -55,12 +55,15 @@ NovelLens 本地应用进程（默认 127.0.0.1:8000）
 1. 按操作系统规则解析路径，允许绝对路径、上级目录路径及指向其他目录的符号链接或目录联接。解析后的目标须为可读的普通文件；文件不存在、不可读或不是普通文件时返回明确错误。不绕过操作系统权限，也不自动创建目录。
 2. 以二进制读取，累计大小不得超过现有 max_file_bytes，不能仅依赖文件大小声明后无界读取。一次调用取得一份有界字节内容，再传给 ImportService；不解码后重新编码，不修改或覆盖素材。
 3. 调用方应保持文件在读取期间不变；若检测到读取期间文件变化，拒绝本次导入并返回 `SOURCE_FILE_CHANGED`。本期不提供与外部编辑器协同的文件快照或锁定机制。
-4. UTF-8、BOM、换行、书名、自然段、字节位置、文件摘要和格式上限全部沿用 Spec 02。MCP 不再实现一套解析规则，也不要求调用方提交整理前的文件。
+4. UTF-8、BOM、换行、分部名、自然段、字节位置、文件摘要和格式上限全部沿用 Spec 02。MCP 不再实现一套解析规则，也不要求调用方提交整理前的文件。
 5. 预检是独立调用，不预留名称、不锁定文件。正式导入重新读取并校验当次字节；调用方不得把先前预检视为对随后修改文件的确认。
 
 这是一项仅属于本地 MCP 工具的文件读取能力。Spec 02 的 REST 上传接口仍只接受 multipart 文件字节，不新增服务器路径参数；两种入口最终调用相同的字节导入服务。作品入库后不依赖导入路径继续存在，文件路径不作为作品身份或请求指纹。
 
 ## 4. 工具契约
+
+作品创建、改名、分部目录及新导入契约按 [Spec 12](12-作品分部与追加导入.md) 修订；新增 work_create、work_update、part_list、part_get、part_update。先创建作品再导入分部，不兼容旧 work_import 系列。
+
 
 工具使用下划线命名，描述与参数说明使用简体中文。JSON Schema 和运行时校验保持一致，拒绝未知参数，UUID、分页上限与范围规则不得因未经过 REST 参数校验而失效。复用现有 contracts 中的类型和约束，必要的共用校验放在可被两种入口复用的位置。
 
@@ -68,12 +71,12 @@ NovelLens 本地应用进程（默认 127.0.0.1:8000）
 
 | 工具 | 输入 | 结果 / 业务映射 |
 | --- | --- | --- |
-| `work_import_validate` | file_path | ValidationReport；ImportService.validate |
-| `work_import` | file_path、request_id | ImportOut；ImportService.import_source |
-| `work_import_get` | request_id | 已提交 ImportOut；ImportService.result |
+| `part_import_validate` | work_id、file_path | ValidationReport；ImportService.validate |
+| `part_import` | work_id、file_path、request_id | ImportOut；ImportService.import_source |
+| `part_import_get` | request_id | 已提交 ImportOut；ImportService.result |
 | `work_list` | 可选 limit、cursor | Page[WorkOut]；默认排除屏蔽作品，详见 Spec 11；ReadingService.list_works |
 | `work_get` | work_id | WorkOut；ReadingService.get_work |
-| `source_sections` | work_id；可选 limit、cursor | Page[SectionOut]；ReadingService.list_sections |
+| `source_sections` | work_id；可选 part_id、limit、cursor | Page[SectionOut]；ReadingService.list_sections |
 | `source_paragraphs` | work_id、section_id；可选 limit、cursor、format | 完整或精简段落页；ReadingService.list_paragraphs |
 | `source_read` | source_range；可选 limit、cursor、format | 完整或精简范围页；从 source_range.work_id 确定作品，调用 ReadingService.read |
 | `source_get_context` | work_id、section_id、paragraph_id；可选 before、after、format | 完整或精简上下文；ReadingService.context |
@@ -84,7 +87,7 @@ SourceRange 的 work_id、section_id、start_paragraph_id、end_paragraph_id 均
 
 上述三个原文工具支持 Spec 02 的 `format=full|compact`，默认 compact 供 AI 连续阅读，字节定位显式使用 full。工具发现应声明两种成功输出及错误结构；1 MiB 上限按所选格式的最终业务对象计量。工具说明须区分分页上限和读取范围：增大 limit 不会越过 SourceRange，before / after 是段落数，不保证场景完整。
 
-工具注解按实际副作用设置：只有 work_import 会写入数据库，其余工具不修改小说或业务数据。work_import 不覆盖作品，幂等性以相同 request_id 和相同字节为前提；工具描述必须说明重试方式。注解只是客户端提示，不替代运行时校验和数据库约束。
+工具注解按实际副作用设置：part_import、work_create、work_update、part_update 会写入数据库，其余目录与原文工具只读。part_import 不覆盖作品，幂等性以相同 request_id、work_id 和相同字节为前提；工具描述必须说明重试方式。注解只是客户端提示，不替代运行时校验和数据库约束。
 
 ## 5. 结果、错误与读取体积
 
@@ -117,7 +120,7 @@ HTTP 请求体超限、Host / Origin 不允许等在协议执行前发生的拒�
 
 request_id 由调用方在正式导入前生成并保存；MCP 不偷偷生成或替换请求键。相同键及字节重放返回相同作品和坐标、replayed=true；相同键换内容及新键同名冲突继续由事务与数据库唯一约束裁决。
 
-调用超时、取消、连接断开或应用进程退出不等于数据库一定回滚。调用方应先通过 work_import_get 查询，再决定是否使用原键、原文件重试；IMPORT_NOT_COMMITTED 仅表示查询时没有已提交结果。连接中断时不得承诺“导入失败且未写入”，也不得新建请求键自动重试。
+调用超时、取消、连接断开或应用进程退出不等于数据库一定回滚。调用方应先通过 part_import_get 查询，再决定是否使用原键、原文件重试；IMPORT_NOT_COMMITTED 仅表示查询时没有已提交结果。连接中断时不得承诺“导入失败且未写入”，也不得新建请求键自动重试。
 
 本期沿用同步导入，不新增 accepted / running 等任务状态或虚构进度。MCP 协议请求 ID、协议会话与业务 request_id 是不同概念；业务结果不绑定客户端连接，恢复依据是持久化的业务 request_id。
 
@@ -138,7 +141,7 @@ request_id 由调用方在正式导入前生成并保存；MCP 不偷偷生成�
 
 | 编号 | 可观察行为与验证 |
 | --- | --- |
-| M1 | 只启动一个真实 NovelLens 应用进程，/health、现有 REST 路由和 /mcp 在同一端口可用；官方 Streamable HTTP 客户端完成协商、发现本规格九个原文工具并按 schema 调用；Spec 04 增加九个资产工具，Spec 05 增加十一个实体与关系工具 |
+| M1 | 只启动一个真实 NovelLens 应用进程，/health、现有 REST 路由和 /mcp 在同一端口可用；官方 Streamable HTTP 客户端完成协商、发现本规格及 Spec 12 的十四个目录与原文工具并按 schema 调用；Spec 04 提供十一个标签及标注工具，Spec 05 增加十一个实体与关系工具 |
 | M2 | 以隔离目录中的中文路径小样例完成预检、导入、目录、段落、范围和上下文读取；BOM、换行、空白及字节坐标与 Spec 02 一致 |
 | M3 | 真正访问 PostgreSQL，REST 导入后 MCP 可读取、MCP 导入后 REST 可查询和下载同一原文；跨入口重放返回原 UUID，同键异内容、异键同名及跨作品 / Section 引用不能绕过现有规则 |
 | M4 | 应用进程重启后可查询原请求和读取原坐标；忽略首次导入响应后仍可用持久化请求键恢复，不重复创建作品 |

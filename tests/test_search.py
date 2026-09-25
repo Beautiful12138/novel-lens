@@ -4,6 +4,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
+from part_fixtures import import_work
 from sqlalchemy import Connection, event, text, update
 from starlette.testclient import TestClient
 from test_assets import create_annotation, revision
@@ -37,8 +38,8 @@ TEXTS = [
 
 def import_search_source(database: Database) -> tuple[UUID, list[SourceRange]]:
     """跨两个章节制造相同段落序号，返回可回读的真实坐标。"""
-    data = (f"书名：{uuid4()}\n标题：甲\n" + "\n".join(TEXTS) + "\n标题：乙\n月光").encode()
-    work = ImportService(database, 100000).import_source(data, uuid4()).work
+    data = (f"分部：{uuid4()}\n标题：甲\n" + "\n".join(TEXTS) + "\n标题：乙\n月光").encode()
+    work = import_work(ImportService(database, 100000), data, uuid4()).work
     reading = ReadingService(database)
     refs = []
     for section in reading.list_sections(work.id, 100, None).items:

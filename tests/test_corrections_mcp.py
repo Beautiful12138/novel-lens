@@ -6,15 +6,16 @@ from uuid import uuid4
 
 import httpx
 from mcp import Client
+from part_fixtures import http_import
 from test_live_http import running_server
 from test_mcp_http import call
 
 
 def test_corrections_mcp(postgres_url: str, tmp_path: Path) -> None:
     async def exercise(rest: httpx.Client) -> None:
-        work = rest.post(
-            "/work-imports",
-            files={"file": ("book.txt", f"书名：{uuid4()}\n标题：一\n测试原文".encode())},
+        work = http_import(
+            rest,
+            files={"file": ("book.txt", f"分部：{uuid4()}\n标题：一\n测试原文".encode())},
             data={"request_id": str(uuid4())},
         ).json()["work"]["id"]
         async with Client(str(rest.base_url).rstrip("/") + "/mcp") as mcp:

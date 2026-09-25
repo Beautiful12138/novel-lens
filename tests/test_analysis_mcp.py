@@ -7,6 +7,7 @@ from uuid import uuid4
 
 import httpx
 from mcp import Client
+from part_fixtures import http_import
 from test_live_http import running_server
 from test_mcp_http import call
 
@@ -15,18 +16,18 @@ def test_analysis_tools_restart_and_errors(postgres_url: str, tmp_path: Path) ->
     async def exercise(rest: httpx.Client) -> dict[str, Any]:
         async with Client(str(rest.base_url).rstrip("/") + "/mcp") as mcp:
             tools = {tool.name: tool for tool in (await mcp.list_tools()).tools}
-            assert len(tools) == 48
+            assert len(tools) == 53
             hints = tools["analysis_checkpoint"].annotations
             assert hints and hints.destructive_hint and not hints.read_only_hint
             read_hints = tools["coverage_get"].annotations
             assert read_hints and read_hints.read_only_hint
-            work = rest.post(
-                "/work-imports",
+            work = http_import(
+                rest,
                 data={"request_id": str(uuid4())},
                 files={
                     "file": (
                         "sample.txt",
-                        f"书名：{uuid4()}\n标题：样本\nprivate-checkpoint-source\n末段".encode(),
+                        f"分部：{uuid4()}\n标题：样本\nprivate-checkpoint-source\n末段".encode(),
                     )
                 },
             ).json()["work"]

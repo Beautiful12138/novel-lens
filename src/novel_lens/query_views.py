@@ -39,6 +39,8 @@ class CompactExcerpt(BaseModel):
 
 
 class CompactSourceHit(BaseModel):
+    part_id: UUID
+    part_name: str
     section_title: str
     ordinal: int
     source_range: CompactSourceRange
@@ -51,6 +53,9 @@ class CompactSourceResults(Page[CompactSourceHit]):
 
 
 class CompactAnnotationHit(BaseModel):
+    part_id: UUID
+    part_name: str
+    section_title: str
     annotation_id: UUID
     version: int
     status: AnnotationStatus
@@ -90,6 +95,9 @@ class CompactAnnotationOut(BaseModel):
 
 
 class CompactSemanticHit(BaseModel):
+    part_id: UUID
+    part_name: str
+    section_title: str
     source_range: CompactSourceRange
     excerpt: str
     excerpt_truncated: bool
@@ -138,6 +146,8 @@ def source_search_view(
             next_cursor=page.next_cursor,
             items=[
                 CompactSourceHit(
+                    part_id=v.part_id,
+                    part_name=v.part_name,
                     section_title=v.section_title,
                     ordinal=v.ordinal,
                     source_range=compact_range(v.source_range),
@@ -161,6 +171,9 @@ def annotation_search_view(
             next_cursor=page.next_cursor,
             items=[
                 CompactAnnotationHit(
+                    part_id=v.part_id,
+                    part_name=v.part_name,
+                    section_title=v.section_title,
                     annotation_id=v.annotation_id,
                     version=v.version,
                     status=v.status,

@@ -13,6 +13,7 @@ Term = Annotated[str, Field(strict=True, min_length=1, max_length=128)]
 
 
 class SearchRequest(RequestModel):
+    part_id: UUID | None = None
     format: ReadingFormat = "compact"
     work_id: UUID
     terms: list[Term] = Field(min_length=1, max_length=8, strict=True)
@@ -44,6 +45,8 @@ class SearchExcerpt(BaseModel):
 
 
 class SourceSearchHit(BaseModel):
+    part_id: UUID
+    part_name: str
     work_id: UUID
     section_id: UUID
     section_title: str
@@ -56,6 +59,9 @@ class SourceSearchHit(BaseModel):
 
 
 class AnnotationSearchHit(BaseModel):
+    part_id: UUID
+    part_name: str
+    section_title: str
     work_id: UUID
     annotation_id: UUID
     version: int

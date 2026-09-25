@@ -6,6 +6,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
+from part_fixtures import import_work
 from sqlalchemy import Connection, select, text
 from sqlalchemy.engine import RowMapping
 from sqlalchemy.exc import DBAPIError
@@ -39,8 +40,8 @@ def assets(database: Database) -> AssetService:
 
 @pytest.fixture
 def source(database: Database) -> tuple[UUID, list[SourceRange]]:
-    data = f"书名：{uuid4()}\n标题：甲\n首段\n中段\n尾段\n标题：乙\n另一章".encode()
-    work = ImportService(database, 10000).import_source(data, uuid4()).work
+    data = f"分部：{uuid4()}\n标题：甲\n首段\n中段\n尾段\n标题：乙\n另一章".encode()
+    work = import_work(ImportService(database, 10000), data, uuid4()).work
     reading = ReadingService(database)
     result = []
     for section in reading.list_sections(work.id, 100, None).items:
@@ -307,7 +308,7 @@ def test_database_failure_rolls_back_entire_revision(
     with pytest.raises(ServiceError) as absent:
         assets.write_result(update.request_id)
     assert absent.value.code == "WRITE_NOT_COMMITTED"
-    assert assets.update_annotation(update).result.version == 2  # type: ignore[union-attr]
+    assert assets.update_annotation(update).result.version == 2
 
 
 def test_detail_uses_one_snapshot_during_concurrent_update(

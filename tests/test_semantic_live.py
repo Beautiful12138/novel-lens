@@ -8,6 +8,7 @@ from uuid import uuid4
 
 import pytest
 from mcp import Client
+from part_fixtures import http_file, http_import
 from test_live_http import running_server
 from test_mcp_http import call
 
@@ -28,7 +29,7 @@ def test_real_model_http_mcp_restart(postgres_url: str, tmp_path: Path, kind: st
     local = tmp_path / "embedding.toml"
     save_config(config, local)
     data = (
-        f"书名：{uuid4()}\n标题：雨夜\n"
+        f"分部：{uuid4()}\n标题：雨夜\n"
         "　暴雨敲打窗户，她屏住呼吸，听见门外越来越近的脚步声。 \n"
         "纸条上写着 <|endoftext|>，墨迹尚未干透。\n"
         "标题：沙漠\n烈日晒着沙丘，旅人抿了抿干裂的嘴唇，水壶已经空了。\n"
@@ -37,8 +38,8 @@ def test_real_model_http_mcp_restart(postgres_url: str, tmp_path: Path, kind: st
     with running_server(
         postgres_url, tmp_path, "semantic", embedding_config=local, request_timeout=120
     ) as rest:
-        work = rest.post(
-            "/work-imports", files={"file": ("sample.txt", data)}, data={"request_id": str(uuid4())}
+        work = http_import(
+            rest, files={"file": ("sample.txt", data)}, data={"request_id": str(uuid4())}
         ).json()["work"]["id"]
 
         async def prepare_annotations() -> None:
@@ -181,7 +182,7 @@ def test_real_model_http_mcp_restart(postgres_url: str, tmp_path: Path, kind: st
                     )
 
             asyncio.run(exercise())
-            assert rest.get(base + "/file").content == data
+            assert http_file(rest, work).content == data
             mismatch = rest.post(f"/works/{uuid4()}/semantic-search", json=query)
             assert mismatch.status_code == 422
         assert rest.get(base + "/semantic-indexes/status", params={"kind": kind}).json()["active"][

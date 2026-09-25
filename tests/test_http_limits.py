@@ -13,7 +13,9 @@ from novel_lens.config import Settings
 def test_size_limits_including_without_content_length() -> None:
     settings = Settings.model_construct(max_file_bytes=20, max_request_bytes=512)
     with TestClient(create_app(settings)) as client:
-        response = client.post("/work-imports/validate", files={"file": ("large.txt", b"x" * 21)})
+        response = client.post(
+            f"/works/{uuid4()}/part-imports/validate", files={"file": ("large.txt", b"x" * 21)}
+        )
         assert response.status_code == 413
         assert response.json()["code"] == "FILE_TOO_LARGE"
 
@@ -27,7 +29,7 @@ def test_size_limits_including_without_content_length() -> None:
             yield b"\r\n--boundary--\r\n"
 
         response = client.post(
-            "/work-imports/validate",
+            f"/works/{uuid4()}/part-imports/validate",
             content=chunks(),
             headers={"Content-Type": "multipart/form-data; boundary=boundary"},
         )
@@ -59,11 +61,11 @@ def test_database_unavailable_keeps_health_alive() -> None:
 def test_malformed_multipart_rejected_safely() -> None:
     with TestClient(create_app()) as client:
         response = client.post(
-            "/work-imports",
+            f"/works/{uuid4()}/part-imports",
             content=b"private-body",
             headers={"Content-Type": "multipart/form-data"},
         )
         assert response.status_code == 422
         assert "private-body" not in response.text
-        response = client.post("/work-imports", json={"file": "/server/path"})
+        response = client.post(f"/works/{uuid4()}/part-imports", json={"file": "/server/path"})
         assert response.status_code == 422

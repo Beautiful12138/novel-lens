@@ -7,12 +7,13 @@ from uuid import uuid4
 
 import httpx
 from mcp import Client
+from part_fixtures import http_file, mcp_import
 from test_live_http import running_server
 from test_mcp_http import call
 
 
 def test_asset_tools_roundtrip_restart_and_errors(postgres_url: str, tmp_path: Path) -> None:
-    data = f"书名：{uuid4()}\n标题：章一\n首段\n次段\n标题：章二\n尾段".encode()
+    data = f"分部：{uuid4()}\n标题：章一\n首段\n次段\n标题：章二\n尾段".encode()
     novel = tmp_path / "临时样例.txt"
     novel.write_bytes(data)
     namespace = uuid4().hex
@@ -21,15 +22,13 @@ def test_asset_tools_roundtrip_restart_and_errors(postgres_url: str, tmp_path: P
     async def exercise(rest: httpx.Client) -> dict[str, Any]:
         async with Client(str(rest.base_url).rstrip("/") + "/mcp") as mcp:
             tools = (await mcp.list_tools()).tools
-            assert len(tools) == 48
+            assert len(tools) == 53
             assert all(t.output_schema for t in tools)
             by_name = {t.name: t for t in tools}
             assert by_name["annotation_update"].annotations.destructive_hint  # type: ignore[union-attr]
-            work = (
-                await call(
-                    mcp, "work_import", {"file_path": str(novel), "request_id": str(uuid4())}
-                )
-            )["work"]
+            work = (await mcp_import(mcp, {"file_path": str(novel), "request_id": str(uuid4())}))[
+                "work"
+            ]
             sections = (await call(mcp, "source_sections", {"work_id": work["id"]}))["items"]
             ranges = []
             for section in sections:
@@ -175,7 +174,7 @@ def test_asset_tools_roundtrip_restart_and_errors(postgres_url: str, tmp_path: P
                 )
                 == 1
             )
-            assert rest.get(f"/works/{work['id']}/file").content == data
+            assert http_file(rest, work["id"]).content == data
             return dict(
                 create=create,
                 annotation=annotation,

@@ -8,6 +8,7 @@ from uuid import uuid4
 
 import httpx
 from mcp import Client
+from part_fixtures import http_file, http_import
 from test_import_read import sample
 from test_live_http import running_server
 from test_mcp_http import call
@@ -17,10 +18,8 @@ def test_compact_reading_roundtrip(postgres_url: str, tmp_path: Path) -> None:
     data = sample()
 
     async def exercise(rest: httpx.Client) -> None:
-        work = rest.post(
-            "/work-imports",
-            files={"file": ("sample.txt", data)},
-            data={"request_id": str(uuid4())},
+        work = http_import(
+            rest, files={"file": ("sample.txt", data)}, data={"request_id": str(uuid4())}
         ).json()["work"]["id"]
         sections = rest.get(f"/works/{work}/sections").json()["items"]
         section = sections[0]["id"]
@@ -123,10 +122,8 @@ def test_compact_reading_roundtrip(postgres_url: str, tmp_path: Path) -> None:
             )
 
             # 精简模式不能绕过归属、游标、范围和输入校验。
-            other = rest.post(
-                "/work-imports",
-                files={"file": ("other.txt", sample())},
-                data={"request_id": str(uuid4())},
+            other = http_import(
+                rest, files={"file": ("other.txt", sample())}, data={"request_id": str(uuid4())}
             ).json()["work"]["id"]
             await call(
                 mcp,
@@ -172,7 +169,7 @@ def test_compact_reading_roundtrip(postgres_url: str, tmp_path: Path) -> None:
             assert rest.get(path, params={"format": "unknown"}).status_code == 422
             assert rest.post(read_path, json=request | {"format": "unknown"}).status_code == 422
             assert rest.post(context_path, json=anchor | {"format": "unknown"}).status_code == 422
-            assert rest.get(f"/works/{work}/file").content == data
+            assert http_file(rest, work).content == data
 
     with running_server(postgres_url, tmp_path, "compact") as rest:
         asyncio.run(exercise(rest))

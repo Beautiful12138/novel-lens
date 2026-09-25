@@ -7,6 +7,7 @@ from typing import Any
 from uuid import uuid4
 
 import pytest
+from part_fixtures import http_file, http_import, http_work, import_work
 from sqlalchemy import text
 from starlette.testclient import TestClient
 
@@ -17,16 +18,14 @@ from novel_lens.importing import ImportService
 
 def sample(name: str | None = None) -> bytes:
     return (
-        f"\ufeff书名：{name or uuid4()}\r\n标题：重复标题\r"
+        f"\ufeff分部：{name or uuid4()}\r\n标题：重复标题\r"
         "　首段😀 \t\n第二段\r\n第三段\r标题：重复标题\n标题：结尾\n末段"
     ).encode()
 
 
 def imported(client: TestClient, data: bytes | None = None) -> dict[str, Any]:
-    response = client.post(
-        "/work-imports",
-        files={"file": ("book.txt", data or sample())},
-        data={"request_id": str(uuid4())},
+    response = http_import(
+        client, files={"file": ("book.txt", data or sample())}, data={"request_id": str(uuid4())}
     )
     assert response.status_code == 201, response.text
     result: dict[str, Any] = response.json()
@@ -35,17 +34,20 @@ def imported(client: TestClient, data: bytes | None = None) -> dict[str, Any]:
 
 def test_upload_read_download_and_idempotency(client: TestClient) -> None:
     data = sample()
+    work_id = http_work(client)
     assert (
-        client.post("/work-imports/validate", files={"file": ("书.txt", data)}).json()["status"]
+        client.post(
+            f"/works/{work_id}/part-imports/validate", files={"file": ("书.txt", data)}
+        ).json()["status"]
         == "valid"
     )
     result = imported(client, data)
     work = result["work"]
     work_id = work["id"]
     assert (work["section_count"], work["paragraph_count"]) == (3, 4)
-    assert work["source_sha256"] == sha256(data).hexdigest()
+    assert result["part"]["source_sha256"] == sha256(data).hexdigest()
     assert work["source_bytes"] == len(data)
-    assert client.get(f"/works/{work_id}/file").content == data
+    assert http_file(client, work_id).content == data
     sections = client.get(f"/works/{work_id}/sections").json()["items"]
     assert [s["ordinal"] for s in sections] == [1, 2, 3]
     assert sections[0]["title"] == sections[1]["title"]
@@ -65,28 +67,30 @@ def test_upload_read_download_and_idempotency(client: TestClient) -> None:
         f"/works/{work_id}/sections/{sections[1]['id']}/paragraphs", params={"format": "full"}
     ).json()
     assert empty == {"items": [], "next_cursor": None}
-    replay = client.post(
-        "/work-imports",
-        files={"file": ("renamed.txt", data)},
-        data={"request_id": result["request_id"]},
+    replay = http_import(
+        client, files={"file": ("renamed.txt", data)}, data={"request_id": result["request_id"]}
     )
     assert replay.status_code == 200
     assert replay.json()["replayed"] is True
     assert replay.json()["work"] == work
     assert client.get(paragraph_url, params={"format": "full"}).json()["items"] == paragraphs
-    assert client.get(f"/work-imports/{result['request_id']}").json()["work"] == work
-    conflict = client.post(
-        "/work-imports",
+    assert client.get(f"/part-imports/{result['request_id']}").json()["work"] == work
+    conflict = http_import(
+        client,
         files={"file": ("book.txt", data + b"changed")},
         data={"request_id": result["request_id"]},
     )
     assert (conflict.status_code, conflict.json()["code"]) == (409, "REQUEST_CONFLICT")
     conflict = client.post(
-        "/work-imports", files={"file": ("book.txt", data)}, data={"request_id": str(uuid4())}
+        f"/works/{work_id}/part-imports",
+        files={"file": ("book.txt", data)},
+        data={"request_id": str(uuid4())},
     )
-    assert (conflict.status_code, conflict.json()["code"]) == (409, "WORK_NAME_CONFLICT")
-    report = client.post("/work-imports/validate", files={"file": ("book.txt", data)}).json()
-    assert report["issues"][0]["code"] == "WORK_NAME_CONFLICT"
+    assert (conflict.status_code, conflict.json()["code"]) == (409, "PART_NAME_CONFLICT")
+    report = client.post(
+        f"/works/{work_id}/part-imports/validate", files={"file": ("book.txt", data)}
+    ).json()
+    assert report["issues"][0]["code"] == "PART_NAME_CONFLICT"
 
 
 def test_ranges_context_and_scope_isolation(client: TestClient) -> None:
@@ -176,26 +180,23 @@ def test_ranges_context_and_scope_isolation(client: TestClient) -> None:
 def test_invalid_input_creates_no_result_and_does_not_echo(client: TestClient) -> None:
     key = str(uuid4())
     bad = b"private-body\xff"
-    report = client.post("/work-imports/validate", files={"file": ("bad.txt", bad)}).json()
+    work_id = http_work(client)
+    report = client.post(
+        f"/works/{work_id}/part-imports/validate", files={"file": ("bad.txt", bad)}
+    ).json()
     assert report["status"] == "invalid"
     assert report["issues"][0]["source_position"]["start_byte"] == len(bad) - 1
-    response = client.post(
-        "/work-imports", files={"file": ("bad.txt", bad)}, data={"request_id": key}
-    )
+    response = http_import(client, files={"file": ("bad.txt", bad)}, data={"request_id": key})
     assert response.status_code == 422
     assert "private-body" not in response.text
-    assert client.get(f"/work-imports/{key}").json()["details"]["status"] == "not_committed"
+    assert client.get(f"/part-imports/{key}").json()["details"]["status"] == "not_committed"
     for fields in [
         [("file", ("a.txt", sample())), ("file", ("b.txt", sample()))],
         [("file", ("a.txt", sample())), ("original_file", ("b.txt", b"private-body"))],
     ]:
-        assert (
-            client.post("/work-imports", files=fields, data={"request_id": key}).status_code == 422
-        )
-    response = client.post(
-        "/work-imports",
-        files={"file": ("a.txt", sample())},
-        data={"request_id": key, "confirmed": "true"},
+        assert http_import(client, files=fields, data={"request_id": key}).status_code == 422
+    response = http_import(
+        client, files={"file": ("a.txt", sample())}, data={"request_id": key, "confirmed": "true"}
     )
     assert response.status_code == 422
     response = client.post(f"/works/{uuid4()}/source/read", json={"private-body": "private-body"})
@@ -212,7 +213,7 @@ def test_concurrent_imports(database: Database, same_key: bool) -> None:
     def perform(number: int) -> str:
         barrier.wait(timeout=10)
         try:
-            result = service.import_source(data, key if same_key or number == 0 else uuid4())
+            result = import_work(service, data, key if same_key or number == 0 else uuid4())
             return str(result.work.id)
         except ServiceError as exc:
             return exc.code
@@ -229,6 +230,7 @@ def test_mid_transaction_failure_rolls_back_everything(
     client: TestClient, database: Database
 ) -> None:
     marker = "rollback-" + uuid4().hex
+    work_id = http_work(client)
     with database.engine.begin() as connection:
         connection.execute(
             text("""CREATE FUNCTION reject_test_paragraph() RETURNS trigger AS $$
@@ -240,25 +242,27 @@ def test_mid_transaction_failure_rolls_back_everything(
         before = connection.execute(
             text(
                 "SELECT (SELECT count(*) FROM works), "
-                "(SELECT count(*) FROM work_sources), "
+                "(SELECT count(*) FROM part_sources), "
                 "(SELECT count(*) FROM sections), "
                 "(SELECT count(*) FROM paragraphs)"
             )
         ).one()
     key = str(uuid4())
-    data = f"书名：{uuid4()}\n标题：章\n正常段\n{marker}".encode()
+    data = f"分部：{uuid4()}\n标题：章\n正常段\n{marker}".encode()
     try:
         response = client.post(
-            "/work-imports", files={"file": ("a.txt", data)}, data={"request_id": key}
+            f"/works/{work_id}/part-imports",
+            files={"file": ("a.txt", data)},
+            data={"request_id": key},
         )
         assert response.status_code == 500
         assert "private-body" not in response.text and marker not in response.text
-        assert client.get(f"/work-imports/{key}").status_code == 404
+        assert client.get(f"/part-imports/{key}").status_code == 404
         with database.engine.connect() as connection:
             after = connection.execute(
                 text(
                     "SELECT (SELECT count(*) FROM works), "
-                    "(SELECT count(*) FROM work_sources), "
+                    "(SELECT count(*) FROM part_sources), "
                     "(SELECT count(*) FROM sections), "
                     "(SELECT count(*) FROM paragraphs)"
                 )
@@ -273,7 +277,9 @@ def test_mid_transaction_failure_rolls_back_everything(
             )
     assert (
         client.post(
-            "/work-imports", files={"file": ("a.txt", data)}, data={"request_id": key}
+            f"/works/{work_id}/part-imports",
+            files={"file": ("a.txt", data)},
+            data={"request_id": key},
         ).status_code
         == 201
     )

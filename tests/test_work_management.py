@@ -8,13 +8,9 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
-from alembic import command
-from alembic.config import Config
-from conftest import ROOT, temporary_database
 from mcp import Client
-from pydantic import SecretStr
+from part_fixtures import http_file, http_import
 from sqlalchemy import Connection, event, text
-from sqlalchemy.exc import IntegrityError
 from starlette.testclient import TestClient
 from test_analysis import create as create_job
 from test_assets import create_annotation, create_tag
@@ -28,7 +24,6 @@ from test_style_guides import guide_request
 from novel_lens.analysis import AnalysisService
 from novel_lens.asset_contracts import AnnotationCreate, AnnotationOut, CoverageMark
 from novel_lens.assets import AssetService
-from novel_lens.config import Settings
 from novel_lens.database import Database
 from novel_lens.errors import ServiceError
 from novel_lens.reading import ReadingService
@@ -57,9 +52,9 @@ def test_http_delete_all_assets_and_reimport(database: Database, client: TestCli
     other = imported(database, "标题：保留\n不能改动的原文")
     tag = create_tag(assets, uuid4().hex, "共享标签")
     before = snapshot(database)
-    data = f"书名：{uuid4()}\n标题：甲\n首段\n尾段".encode()
+    data = f"分部：{uuid4()}\n标题：甲\n首段\n尾段".encode()
     key = str(uuid4())
-    response = client.post("/work-imports", data={"request_id": key}, files={"file": data})
+    response = http_import(client, data={"request_id": key}, files={"file": data})
     assert response.status_code == 201
     work = UUID(response.json()["work"]["id"])
     refs = references(database, work)
@@ -89,10 +84,10 @@ def test_http_delete_all_assets_and_reimport(database: Database, client: TestCli
     assert snapshot(database) == before
     assert client.delete(f"/works/{work}").status_code == 204
     assert client.get(f"/works/{work}").status_code == 404
-    assert client.get(f"/works/{work}/file").status_code == 404
-    assert client.get(f"/work-imports/{key}").status_code == 404
+    assert http_file(client, work).status_code == 404
+    assert client.get(f"/part-imports/{key}").status_code == 404
     assert client.get(f"/works/{other}").status_code == 200
-    again = client.post("/work-imports", data={"request_id": str(uuid4())}, files={"file": data})
+    again = http_import(client, data={"request_id": str(uuid4())}, files={"file": data})
     assert again.status_code == 201 and again.json()["work"]["id"] != str(work)
 
 
@@ -107,7 +102,8 @@ def test_visibility_lists_search_and_restore(database: Database, client: TestCli
         ).index_id
         build(service, work, index)
     reading = ReadingService(database)
-    original = reading.file(work)
+    part = reading.list_parts(work, 100, None).items[0]
+    original = reading.file(work, part.id)
     for _ in range(2):
         result = client.patch(f"/works/{work}/visibility", json={"visibility": "hidden"})
         assert result.status_code == 200 and result.json()["visibility"] == "hidden"
@@ -120,7 +116,7 @@ def test_visibility_lists_search_and_restore(database: Database, client: TestCli
                 "items"
             ]
         }
-    assert client.get(f"/works/{work}/file").content == original
+    assert http_file(client, work).content == original
     for path in ("/source/search", "/annotations/search"):
         for format in ("full", "compact"):
             result = client.post(
@@ -140,7 +136,7 @@ def test_visibility_lists_search_and_restore(database: Database, client: TestCli
         assert service.search(
             SemanticSearch.model_validate(dict(work_id=work, kind=kind, query="可检索"))
         ).items
-    assert reading.file(work) == original
+    assert reading.file(work, part.id) == original
     assert (
         client.patch(f"/works/{work}/visibility", json={"visibility": "deleted"}).status_code == 422
     )
@@ -192,7 +188,7 @@ def test_build_lock_rejects_delete(database: Database, client: TestClient, kind:
         conn.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": lock_key(work, kind)})
         result = client.delete(f"/works/{work}")
         assert result.status_code == 409 and result.json()["code"] == "WORK_BUSY"
-        assert client.get(f"/works/{work}/file").status_code == 200
+        assert http_file(client, work).status_code == 200
     assert client.delete(f"/works/{work}").status_code == 204
 
 
@@ -242,36 +238,12 @@ def test_write_finishes_before_delete_without_orphan_receipt(database: Database)
     assert deleted.value.code == "WORK_NOT_FOUND"
 
 
-def test_visibility_migration(postgres_url: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    with temporary_database(postgres_url, "0009") as url:
-        db = Database(Settings.model_construct(database_url=SecretStr(url)))
-        try:
-            work = imported(db, "标题：甲\n旧版本原文")
-            original = ReadingService(db).file(work)
-            with monkeypatch.context() as patch:
-                patch.setenv("NOVEL_LENS_DATABASE_URL", url)
-                config = Config(str(ROOT / "alembic.ini"))
-                command.upgrade(config, "head")
-                command.check(config)
-                assert ReadingService(db).get_work(work).visibility == "visible"
-                with pytest.raises(IntegrityError), db.engine.begin() as conn:
-                    conn.execute(text("UPDATE works SET visibility='bad'"))
-                WorkManagementService(db).set_visibility(work, "hidden")
-                command.downgrade(config, "0009")
-                assert ReadingService(db).file(work) == original
-                command.upgrade(config, "head")
-                assert ReadingService(db).get_work(work).visibility == "visible"
-                command.check(config)
-        finally:
-            db.close()
-
-
 def test_real_http_delete_restart(postgres_url: str, tmp_path: Path) -> None:
-    data = f"书名：{uuid4()}\n标题：章\nHTTP物理删除".encode()
+    data = f"分部：{uuid4()}\n标题：章\nHTTP物理删除".encode()
     with running_server(postgres_url, tmp_path, "delete") as client:
-        work = client.post(
-            "/work-imports", data={"request_id": str(uuid4())}, files={"file": data}
-        ).json()["work"]["id"]
+        work = http_import(client, data={"request_id": str(uuid4())}, files={"file": data}).json()[
+            "work"
+        ]["id"]
         assert (
             client.patch(f"/works/{work}/visibility", json={"visibility": "hidden"}).status_code
             == 200
@@ -296,8 +268,6 @@ def test_real_http_delete_restart(postgres_url: str, tmp_path: Path) -> None:
         assert client.get(f"/works/{work}").status_code == 404
         assert client.delete(f"/works/{work}").status_code == 204
         assert (
-            client.post(
-                "/work-imports", data={"request_id": str(uuid4())}, files={"file": data}
-            ).status_code
+            http_import(client, data={"request_id": str(uuid4())}, files={"file": data}).status_code
             == 201
         )

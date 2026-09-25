@@ -14,8 +14,10 @@ from starlette.exceptions import HTTPException
 from starlette.responses import JSONResponse
 
 from novel_lens.assets import AssetService
+from novel_lens.catalog import CatalogService
 from novel_lens.config import Settings
 from novel_lens.contracts import (
+    CatalogWrite,
     CompactContextOut,
     CompactParagraphPage,
     CompactReadOut,
@@ -25,13 +27,17 @@ from novel_lens.contracts import (
     Limit,
     Page,
     ParagraphOut,
+    PartOut,
+    PartUpdate,
     ReadingFormat,
     ReadOut,
     ReadRequest,
     SectionOut,
     ValidationReport,
+    WorkCreate,
     WorkFilter,
     WorkOut,
+    WorkUpdate,
     WorkVisibilityUpdate,
 )
 from novel_lens.database import Database
@@ -76,6 +82,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     """显式注入配置；缺省采用默认值，不从调用者环境隐式读取连接信息。"""
     settings = settings if settings is not None else Settings.model_construct()
     database = Database(settings)
+    catalog = CatalogService(database)
     importing = ImportService(database, settings.max_file_bytes)
     reading = ReadingService(database)
     management = WorkManagementService(database)
@@ -145,30 +152,58 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"status": "ok"}
 
     @app.post(
-        "/work-imports/validate",
+        "/works/{work_id}/part-imports/validate",
         summary="预检结构已确认的 TXT",
         openapi_extra=upload_schema(importing=False),
     )
-    async def validate(request: Request) -> ValidationReport:
+    async def validate(work_id: UUID, request: Request) -> ValidationReport:
         data, _ = await upload(request, settings.max_file_bytes, importing=False)
-        return await run_in_threadpool(importing.validate, data)
+        return await run_in_threadpool(importing.validate, data, work_id)
 
     @app.post(
-        "/work-imports",
-        summary="原子导入一份已确认 TXT",
+        "/works/{work_id}/part-imports",
+        summary="原子追加一个完整分部",
         status_code=201,
         openapi_extra=upload_schema(importing=True),
     )
-    async def import_source(request: Request, response: Response) -> ImportOut:
+    async def import_source(work_id: UUID, request: Request, response: Response) -> ImportOut:
         data, request_id = await upload(request, settings.max_file_bytes, importing=True)
         assert request_id is not None  # upload 已校验正式导入必需的请求键。
-        result = await run_in_threadpool(importing.import_source, data, request_id)
+        result = await run_in_threadpool(importing.import_source, data, request_id, work_id)
         response.status_code = 200 if result.replayed else 201
         return result
 
-    @app.get("/work-imports/{request_id}", summary="查询已提交请求")
+    @app.get("/part-imports/{request_id}", summary="查询已提交请求")
     def import_result(request_id: UUID) -> ImportOut:
         return importing.result(request_id)
+
+    @app.post("/works", summary="创建空作品", status_code=201)
+    def create_work(request: WorkCreate, response: Response) -> CatalogWrite:
+        result = catalog.create(request)
+        response.status_code = 200 if result.replayed else 201
+        return result
+
+    @app.patch("/works/{work_id}", summary="修改作品名称")
+    def update_work(work_id: UUID, request: WorkUpdate) -> CatalogWrite:
+        if work_id != request.work_id:
+            raise ServiceError("INVALID_INPUT", "路径作品与请求不一致")
+        return catalog.update(request)
+
+    @app.get("/works/{work_id}/parts", summary="分页列出分部")
+    def list_parts(
+        work_id: UUID, limit: PageLimit = 100, cursor: str | None = None
+    ) -> Page[PartOut]:
+        return reading.list_parts(work_id, limit, cursor)
+
+    @app.get("/works/{work_id}/parts/{part_id}", summary="读取分部元数据")
+    def get_part(work_id: UUID, part_id: UUID) -> PartOut:
+        return reading.get_part(work_id, part_id)
+
+    @app.patch("/works/{work_id}/parts/{part_id}", summary="修改分部名称")
+    def update_part(work_id: UUID, part_id: UUID, request: PartUpdate) -> CatalogWrite:
+        if work_id != request.work_id or part_id != request.part_id:
+            raise ServiceError("INVALID_INPUT", "路径归属与请求不一致")
+        return catalog.update(request)
 
     @app.get("/works", summary="分页列出作品")
     def list_works(
@@ -191,9 +226,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/works/{work_id}/sections", summary="分页读取目录")
     def list_sections(
-        work_id: UUID, limit: PageLimit = 100, cursor: str | None = None
+        work_id: UUID,
+        limit: PageLimit = 100,
+        cursor: str | None = None,
+        part_id: UUID | None = None,
     ) -> Page[SectionOut]:
-        return reading.list_sections(work_id, limit, cursor)
+        return reading.list_sections(work_id, limit, cursor, part_id)
 
     @app.get("/works/{work_id}/sections/{section_id}/paragraphs", summary="分页读取完整自然段")
     def list_paragraphs(
@@ -213,12 +251,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def context(work_id: UUID, request: ContextRequest) -> ContextOut | CompactContextOut:
         return reading.context(work_id, request)
 
-    @app.get("/works/{work_id}/file", summary="下载原上传字节", response_class=Response)
-    def file(work_id: UUID) -> Response:
+    @app.get(
+        "/works/{work_id}/parts/{part_id}/file", summary="下载原上传字节", response_class=Response
+    )
+    def file(work_id: UUID, part_id: UUID) -> Response:
         return Response(
-            reading.file(work_id),
+            reading.file(work_id, part_id),
             media_type="application/octet-stream",
-            headers={"Content-Disposition": f'attachment; filename="{work_id}.txt"'},
+            headers={"Content-Disposition": f'attachment; filename="{part_id}.txt"'},
         )
 
     @app.post("/source/search", summary="在指定作品内检索原文关键词")

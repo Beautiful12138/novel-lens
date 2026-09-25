@@ -46,6 +46,8 @@ class WorkOut(BaseModel):
 
     id: UUID
     name: str
+    version: int
+    part_count: int
     visibility: WorkVisibility = "visible"
     created_at: datetime
     section_count: int
@@ -53,6 +55,44 @@ class WorkOut(BaseModel):
     character_count: int
     source_sha256: str
     source_bytes: int
+
+
+class PartOut(BaseModel):
+    """分部的来源摘要；名称可修改，原文与追加顺序不可修改。"""
+
+    id: UUID
+    work_id: UUID
+    name: str
+    ordinal: int
+    version: int
+    created_at: datetime
+    section_count: int
+    paragraph_count: int
+    character_count: int
+    source_sha256: str
+    source_bytes: int
+
+
+class WorkCreate(RequestModel):
+    request_id: UUID
+    name: str = Field(min_length=1, max_length=256, pattern=r"^[^\s\x00](?:[^\x00]*[^\s\x00])?$")
+
+
+class WorkUpdate(WorkCreate):
+    work_id: UUID
+    expected_version: int = Field(ge=1, strict=True)
+
+
+class PartUpdate(WorkUpdate):
+    part_id: UUID
+
+
+class CatalogWrite(BaseModel):
+    """目录写入回执；result 是提交时快照，当前信息另行 get。"""
+
+    request_id: UUID
+    replayed: bool = False
+    result: WorkOut | PartOut
 
 
 class WorkVisibilityUpdate(RequestModel):
@@ -66,11 +106,14 @@ class ImportOut(BaseModel):
     status: Literal["completed"] = "completed"
     replayed: bool
     work: WorkOut
+    part: PartOut
 
 
 class SectionOut(BaseModel):
     id: UUID
     work_id: UUID
+    part_id: UUID
+    part_name: str
     ordinal: int
     title: str
     paragraph_count: int

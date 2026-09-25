@@ -12,6 +12,7 @@ import httpx
 import pytest
 from mcp import Client
 from mcp.shared.exceptions import MCPError
+from part_fixtures import http_file, http_import, http_work, mcp_import
 from test_live_http import running_server
 
 
@@ -31,7 +32,7 @@ async def call(
 def test_real_mcp_roundtrip_and_cross_entry_retry(postgres_url: str, tmp_path: Path) -> None:
     source = tmp_path / "中文小说.txt"
     data = (
-        f"\ufeff书名：{uuid4()}\r\n标题：重复\r\n　private-novel-body😀 \t\r"
+        f"\ufeff分部：{uuid4()}\r\n标题：重复\r\n　private-novel-body😀 \t\r"
         "第二段\n第三段\n标题：重复\n标题：尾声\n末段"
     ).encode()
     source.write_bytes(data)
@@ -40,11 +41,17 @@ def test_real_mcp_roundtrip_and_cross_entry_retry(postgres_url: str, tmp_path: P
     async def exercise(rest: httpx.Client) -> dict[str, Any]:
         address = str(rest.base_url).rstrip("/") + "/mcp"
         async with Client(address) as mcp:
+            validation_work = http_work(rest)
             listing = await mcp.list_tools()
             expected = {
-                "work_import_validate",
-                "work_import",
-                "work_import_get",
+                "part_import_validate",
+                "part_import",
+                "part_import_get",
+                "work_create",
+                "work_update",
+                "part_list",
+                "part_get",
+                "part_update",
                 "work_list",
                 "work_get",
                 "source_sections",
@@ -96,23 +103,64 @@ def test_real_mcp_roundtrip_and_cross_entry_retry(postgres_url: str, tmp_path: P
                 tool.input_schema.get("additionalProperties") is False for tool in listing.tools
             )
             assert all(tool.output_schema for tool in listing.tools)
-            report = await call(mcp, "work_import_validate", {"file_path": source.name})
+            report = await call(
+                mcp, "part_import_validate", {"work_id": validation_work, "file_path": source.name}
+            )
             assert report["status"] == "valid"
-            result = await call(mcp, "work_import", {"file_path": source.name, "request_id": key})
+            result = await mcp_import(mcp, {"file_path": source.name, "request_id": key})
             work = result["work"]
             work_id = work["id"]
             assert not result["replayed"]
             assert rest.get(f"/works/{work_id}").json() == work
-            assert rest.get(f"/works/{work_id}/file").content == data
-            replay = rest.post(
-                "/work-imports", files={"file": ("renamed.txt", data)}, data={"request_id": key}
+            assert http_file(rest, work_id).content == data
+            replay = http_import(
+                rest, files={"file": ("renamed.txt", data)}, data={"request_id": key}
             )
             assert replay.status_code == 200 and replay.json()["work"] == work
-            assert (await call(mcp, "work_import", {"file_path": source.name, "request_id": key}))[
+            assert (await mcp_import(mcp, {"file_path": source.name, "request_id": key}))[
                 "replayed"
             ]
             assert (await call(mcp, "work_get", {"work_id": work_id})) == work
             assert work in (await call(mcp, "work_list", {}))["items"]
+            part = result["part"]
+            assert (await call(mcp, "part_list", {"work_id": work_id}))["items"] == [part]
+            rename = {
+                "work_id": work_id,
+                "part_id": part["id"],
+                "request_id": str(uuid4()),
+                "expected_version": part["version"],
+                "name": "任意分部名",
+            }
+            changed = await call(mcp, "part_update", rename)
+            assert changed["result"]["name"] == "任意分部名"
+            assert (await call(mcp, "part_update", rename))["replayed"]
+            assert (await call(mcp, "part_get", {"work_id": work_id, "part_id": part["id"]}))[
+                "version"
+            ] == 2
+            # 改名不改变原文件和原导入回执。恢复部名供后续重名校验使用。
+            await call(
+                mcp,
+                "part_update",
+                rename
+                | {
+                    "request_id": str(uuid4()),
+                    "expected_version": 2,
+                    "name": part["name"],
+                },
+            )
+            renamed_work = await call(
+                mcp,
+                "work_update",
+                {
+                    "work_id": work_id,
+                    "request_id": str(uuid4()),
+                    "expected_version": work["version"],
+                    "name": "改名-" + str(uuid4()),
+                },
+            )
+            assert renamed_work["result"]["id"] == work_id
+            assert renamed_work["result"]["version"] == work["version"] + 1
+            assert (await call(mcp, "part_import_get", {"request_id": key}))["work"] == work
             page = await call(mcp, "source_sections", {"work_id": work_id, "limit": 1})
             section = page["items"][0]
             rest_page = await call(
@@ -152,16 +200,14 @@ def test_real_mcp_roundtrip_and_cross_entry_retry(postgres_url: str, tmp_path: P
             assert context["at_section_start"] and context["at_section_end"]
             await call(
                 mcp,
-                "work_import",
-                {"file_path": source.name, "request_id": str(uuid4())},
-                code="WORK_NAME_CONFLICT",
+                "part_import",
+                {"work_id": work_id, "file_path": source.name, "request_id": str(uuid4())},
+                code="PART_NAME_CONFLICT",
             )
             # REST 写入后 MCP 立即可见，旧作品的跨作品坐标仍被拒绝。
-            other_data = f"书名：{uuid4()}\n标题：章\n另一个作品".encode()
-            other = rest.post(
-                "/work-imports",
-                files={"file": ("other.txt", other_data)},
-                data={"request_id": str(uuid4())},
+            other_data = f"分部：{uuid4()}\n标题：章\n另一个作品".encode()
+            other = http_import(
+                rest, files={"file": ("other.txt", other_data)}, data={"request_id": str(uuid4())}
             ).json()["work"]
             assert await call(mcp, "work_get", {"work_id": other["id"]}) == other
             await call(
@@ -185,7 +231,7 @@ def test_real_mcp_roundtrip_and_cross_entry_retry(postgres_url: str, tmp_path: P
             async with Client(address) as second:
                 assert await second.list_tools()
             assert rest.get("/health").status_code == 200
-            assert (await call(mcp, "work_import_get", {"request_id": key}))["work"] == work
+            assert (await call(mcp, "part_import_get", {"request_id": key}))["work"] == work
             return {"work": work, "args": args, "paragraphs": paragraphs}
 
     with running_server(postgres_url, tmp_path, "mcp-first") as rest:
@@ -193,7 +239,7 @@ def test_real_mcp_roundtrip_and_cross_entry_retry(postgres_url: str, tmp_path: P
 
     async def recovered(rest: httpx.Client) -> None:
         async with Client(str(rest.base_url).rstrip("/") + "/mcp") as mcp:
-            assert (await call(mcp, "work_import_get", {"request_id": key}))["work"] == saved[
+            assert (await call(mcp, "part_import_get", {"request_id": key}))["work"] == saved[
                 "work"
             ]
             assert (await call(mcp, "source_paragraphs", saved["args"] | {"format": "full"}))[
@@ -202,8 +248,8 @@ def test_real_mcp_roundtrip_and_cross_entry_retry(postgres_url: str, tmp_path: P
             source.write_bytes(data + b"changed")
             await call(
                 mcp,
-                "work_import",
-                {"file_path": source.name, "request_id": key},
+                "part_import",
+                {"work_id": saved["work"]["id"], "file_path": source.name, "request_id": key},
                 code="REQUEST_CONFLICT",
             )
 
@@ -218,18 +264,18 @@ def test_real_mcp_roundtrip_and_cross_entry_retry(postgres_url: str, tmp_path: P
 
 def test_discovery_without_database_and_http_guards(tmp_path: Path) -> None:
     unavailable = "postgresql+psycopg://invalid:private-password@127.0.0.1:1/absent"
-    (tmp_path / "a.txt").write_text("书名：预检样例\n标题：一\n正文", encoding="utf-8")
+    (tmp_path / "a.txt").write_text("分部：预检样例\n标题：一\n正文", encoding="utf-8")
     with running_server(unavailable, tmp_path, "unavailable", request_limit=4096) as rest:
 
         async def exercise() -> None:
             async with Client(str(rest.base_url).rstrip("/") + "/mcp") as mcp:
-                assert len((await mcp.list_tools()).tools) == 48
+                assert len((await mcp.list_tools()).tools) == 53
                 await call(mcp, "work_list", {}, code="DATABASE_UNAVAILABLE")
                 # 文件可以直接读取，后续重名预检仍需数据库。
                 await call(
                     mcp,
-                    "work_import_validate",
-                    {"file_path": "a.txt"},
+                    "part_import_validate",
+                    {"work_id": str(uuid4()), "file_path": "a.txt"},
                     code="DATABASE_UNAVAILABLE",
                 )
 
@@ -259,32 +305,40 @@ def test_file_errors_and_oversize_result(postgres_url: str, tmp_path: Path) -> N
     bad = root / "bad.txt"
     bad.write_bytes(b"private-input\xff")
     huge = root / "huge.txt"
-    huge.write_bytes(f"书名：{uuid4()}\n标题：章\n".encode() + b"z" * (1024 * 1024))
+    huge.write_bytes(f"分部：{uuid4()}\n标题：章\n".encode() + b"z" * (1024 * 1024))
     too_large = root / "too-large.txt"
     with too_large.open("wb") as output:
         output.truncate(64 * 1024 * 1024 + 1)
 
     async def exercise(rest: httpx.Client) -> None:
         async with Client(str(rest.base_url).rstrip("/") + "/mcp") as mcp:
+            validation_work = http_work(rest)
             for path, code in [
                 ("missing.txt", "FILE_NOT_FOUND"),
                 (".", "FILE_UNREADABLE"),
                 (str(too_large), "FILE_TOO_LARGE"),
             ]:
                 key = str(uuid4())
-                await call(mcp, "work_import", {"file_path": path, "request_id": key}, code=code)
-                assert rest.get(f"/work-imports/{key}").status_code == 404
-            invalid = await call(mcp, "work_import_validate", {"file_path": str(bad)})
+                await call(
+                    mcp,
+                    "part_import",
+                    {"work_id": validation_work, "file_path": path, "request_id": key},
+                    code=code,
+                )
+                assert rest.get(f"/part-imports/{key}").status_code == 404
+            invalid = await call(
+                mcp, "part_import_validate", {"work_id": validation_work, "file_path": str(bad)}
+            )
             assert invalid["status"] == "invalid"
             await call(
                 mcp,
-                "work_import",
-                {"file_path": str(bad), "request_id": str(uuid4())},
+                "part_import",
+                {"work_id": validation_work, "file_path": str(bad), "request_id": str(uuid4())},
                 code="IMPORT_VALIDATION_ERROR",
             )
-            work = (
-                await call(mcp, "work_import", {"file_path": str(huge), "request_id": str(uuid4())})
-            )["work"]
+            work = (await mcp_import(mcp, {"file_path": str(huge), "request_id": str(uuid4())}))[
+                "work"
+            ]
             section = (await call(mcp, "source_sections", {"work_id": work["id"]}))["items"][0]
             await call(
                 mcp,
@@ -298,7 +352,7 @@ def test_file_errors_and_oversize_result(postgres_url: str, tmp_path: Path) -> N
                 {"work_id": work["id"], "section_id": section["id"], "format": "compact"},
                 code="RESULT_TOO_LARGE",
             )
-            assert rest.get(f"/works/{work['id']}/file").content == huge.read_bytes()
+            assert http_file(rest, work["id"]).content == huge.read_bytes()
 
     with running_server(postgres_url, tmp_path, "files") as rest:
         asyncio.run(exercise(rest))
@@ -312,7 +366,7 @@ def test_windows_junction_and_unreadable_file(postgres_url: str, tmp_path: Path)
     root.mkdir()
     outside = tmp_path / "outside"
     outside.mkdir()
-    original = f"书名：{uuid4()}\n标题：章\nprivate-outside".encode()
+    original = f"分部：{uuid4()}\n标题：章\nprivate-outside".encode()
     (outside / "book.txt").write_bytes(original)
     junction = root / "linked"
     subprocess.run(
@@ -338,27 +392,30 @@ def test_windows_junction_and_unreadable_file(postgres_url: str, tmp_path: Path)
     async def exercise(rest: httpx.Client) -> None:
         async with Client(str(rest.base_url).rstrip("/") + "/mcp") as mcp:
             key = str(uuid4())
+            validation_work = http_work(rest)
             work_id = None
             # 绝对路径、上级目录和目录联接都指向同一字节，重试不能重复创建作品。
             paths = [str(outside / "book.txt"), "../outside/book.txt", "linked/book.txt"]
             for path in paths:
-                report = await call(mcp, "work_import_validate", {"file_path": path})
+                report = await call(
+                    mcp, "part_import_validate", {"work_id": validation_work, "file_path": path}
+                )
                 assert report["status"] == "valid"
             for index, path in enumerate(paths):
-                result = await call(mcp, "work_import", {"file_path": path, "request_id": key})
+                result = await mcp_import(mcp, {"file_path": path, "request_id": key})
                 assert result["replayed"] == (index > 0)
                 if work_id is None:
                     work_id = result["work"]["id"]
                 assert result["work"]["id"] == work_id
-                assert rest.get(f"/works/{work_id}/file").content == original
+                assert http_file(rest, work_id).content == original
             failed_key = str(uuid4())
             await call(
                 mcp,
-                "work_import",
-                {"file_path": "locked.txt", "request_id": failed_key},
+                "part_import",
+                {"work_id": work_id, "file_path": "locked.txt", "request_id": failed_key},
                 code="FILE_UNREADABLE",
             )
-            assert rest.get(f"/work-imports/{failed_key}").status_code == 404
+            assert rest.get(f"/part-imports/{failed_key}").status_code == 404
 
     try:
         with locked.open("r+b") as held:

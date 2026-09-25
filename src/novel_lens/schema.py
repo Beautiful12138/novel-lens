@@ -37,13 +37,8 @@ works = Table(
         comment="检索可见性；屏蔽保留全部数据及名称占用",
     ),
     CheckConstraint("visibility IN ('visible', 'hidden')", name="ck_works_visibility"),
-    Column("request_id", Uuid, nullable=False),
-    Column(
-        "fingerprint",
-        String(64),
-        nullable=False,
-        comment="导入协议和输入内容摘要；同键不同输入返回冲突",
-    ),
+    Column("version", Integer, nullable=False),
+    Column("part_count", Integer, nullable=False),
     Column("created_at", DateTime(timezone=True), server_default=func.now(), nullable=False),
     Column("section_count", Integer, nullable=False),
     Column("paragraph_count", Integer, nullable=False),
@@ -51,22 +46,59 @@ works = Table(
     Column("source_sha256", String(64), nullable=False),
     Column("source_bytes", Integer, nullable=False),
     UniqueConstraint("name", name="uq_works_name"),
-    UniqueConstraint("request_id", name="uq_works_request_id"),
     CheckConstraint(
-        "section_count > 0 AND paragraph_count > 0 AND character_count > 0", name="ck_works_counts"
+        "part_count >= 0 AND section_count >= 0 AND paragraph_count >= 0 "
+        "AND character_count >= 0 AND source_bytes >= 0 AND version > 0",
+        name="ck_works_counts",
     ),
-    comment="作品与成功请求；名称唯一防止覆盖，请求键唯一防止重试重复创建",
+    comment="作品分析归属及聚合统计；原文由分部保存",
 )
 Index("ix_works_created_id", works.c.created_at, works.c.id)
 
-sources = Table(
-    "work_sources",
+parts = Table(
+    "parts",
     metadata,
-    Column("work_id", Uuid, ForeignKey("works.id"), primary_key=True),
+    Column("id", Uuid, primary_key=True),
+    Column("work_id", Uuid, ForeignKey("works.id"), nullable=False),
+    Column("name", String(256, collation="C"), nullable=False),
+    Column("ordinal", Integer, nullable=False),
+    Column("version", Integer, nullable=False),
+    Column("created_at", DateTime(timezone=True), server_default=func.now(), nullable=False),
+    Column("section_count", Integer, nullable=False),
+    Column("paragraph_count", Integer, nullable=False),
+    Column("character_count", Integer, nullable=False),
+    Column("source_sha256", String(64), nullable=False),
+    Column("source_bytes", Integer, nullable=False),
+    UniqueConstraint("work_id", "ordinal", name="uq_parts_order"),
+    UniqueConstraint("work_id", "name", name="uq_parts_name"),
+    UniqueConstraint("work_id", "id", name="uq_parts_owner"),
+    CheckConstraint(
+        "ordinal > 0 AND version > 0 AND section_count > 0 AND paragraph_count > 0 "
+        "AND character_count > 0 AND source_bytes > 0",
+        name="ck_parts_counts",
+    ),
+    comment="不可变原文的分部；名称可修改，顺序仅追加",
+)
+
+sources = Table(
+    "part_sources",
+    metadata,
+    Column("part_id", Uuid, ForeignKey("parts.id"), primary_key=True),
     Column("content", LargeBinary, nullable=False),
     Column("rule_version", String(32), nullable=False),
     Column("layout", JSONB, nullable=False),
-    comment="完整输入字节及核验依据，与作品和所有段落同事务保存",
+    comment="完整分部上传字节与字节定位；不因改名而修改原文件",
+)
+
+catalog_requests = Table(
+    "catalog_requests",
+    metadata,
+    Column("request_id", Uuid, primary_key=True),
+    Column("work_id", Uuid, ForeignKey("works.id"), nullable=False),
+    Column("operation", String(32), nullable=False),
+    Column("fingerprint", String(64), nullable=False),
+    Column("response", JSONB, nullable=False),
+    comment="作品创建、改名和分部导入的原子幂等回执；随作品删除",
 )
 
 sections = Table(
@@ -74,6 +106,10 @@ sections = Table(
     metadata,
     Column("id", Uuid, primary_key=True),
     Column("work_id", Uuid, ForeignKey("works.id"), nullable=False),
+    Column("part_id", Uuid, nullable=False),
+    ForeignKeyConstraint(
+        ["work_id", "part_id"], ["parts.work_id", "parts.id"], name="fk_sections_part"
+    ),
     Column("ordinal", Integer, nullable=False),
     Column("title", Text, nullable=False),
     Column("paragraph_count", Integer, nullable=False),
@@ -358,6 +394,10 @@ analysis_jobs = Table(
     Column("work_id", Uuid, ForeignKey("works.id"), nullable=False),
     Column("title", String(256), nullable=False),
     Column("goal", Text, nullable=False),
+    Column("part_id", Uuid, nullable=True),
+    ForeignKeyConstraint(
+        ["work_id", "part_id"], ["parts.work_id", "parts.id"], name="fk_jobs_part"
+    ),
     Column("target_kind", String(16), nullable=False),
     Column("status", String(16), nullable=False),
     Column("recovery", JSONB, nullable=False),
@@ -366,7 +406,11 @@ analysis_jobs = Table(
     Column("created_at", DateTime(timezone=True), server_default=func.now(), nullable=False),
     Column("updated_at", DateTime(timezone=True), server_default=func.now(), nullable=False),
     CheckConstraint("version > 0", name="ck_analysis_jobs_version"),
-    CheckConstraint("target_kind IN ('whole_work', 'ranges')", name="ck_analysis_jobs_target"),
+    CheckConstraint(
+        "target_kind IN ('whole_work', 'part', 'ranges') "
+        "AND ((target_kind = 'part') = (part_id IS NOT NULL))",
+        name="ck_analysis_jobs_target",
+    ),
     CheckConstraint("status IN ('running', 'paused', 'completed')", name="ck_analysis_jobs_status"),
     CheckConstraint(
         "(status = 'completed') = (completion IS NOT NULL)", name="ck_analysis_jobs_completion"

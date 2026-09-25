@@ -66,8 +66,10 @@ from novel_lens.asset_contracts import (
     TagUpdate,
 )
 from novel_lens.assets import AssetService
+from novel_lens.catalog import CatalogService
 from novel_lens.config import Settings
 from novel_lens.contracts import (
+    CatalogWrite,
     CompactContextOut,
     CompactParagraphPage,
     CompactReadOut,
@@ -77,13 +79,17 @@ from novel_lens.contracts import (
     ListRequest,
     Page,
     ParagraphOut,
+    PartOut,
+    PartUpdate,
     ReadingFormat,
     ReadOut,
     ReadRequest,
     RequestModel,
     SectionOut,
     ValidationReport,
+    WorkCreate,
     WorkOut,
+    WorkUpdate,
 )
 from novel_lens.embedding import EmbeddingClient
 from novel_lens.errors import ServiceError, database_error
@@ -124,6 +130,7 @@ MAX_RESULT_BYTES = MAX_ASSET_RESULT_BYTES
 
 
 class FileRequest(RequestModel):
+    work_id: UUID
     file_path: str = Field(
         min_length=1, description="任意目录的文件路径；推荐绝对路径，相对路径以服务工作目录为基准"
     )
@@ -141,11 +148,20 @@ class WorkRequest(RequestModel):
     work_id: UUID
 
 
-class SectionsRequest(ListRequest):
+class PartsRequest(ListRequest):
     work_id: UUID
 
 
-class ParagraphsRequest(SectionsRequest):
+class PartRequest(RequestModel):
+    work_id: UUID
+    part_id: UUID
+
+
+class SectionsRequest(PartsRequest):
+    part_id: UUID | None = None
+
+
+class ParagraphsRequest(PartsRequest):
     section_id: UUID
     format: ReadingFormat = "compact"
 
@@ -245,7 +261,7 @@ def create_mcp(
         semantic.create,
         "显式创建作品 fulltext 或 annotation 层的原文语义索引代；相同 request_id 重放。"
         "重建保留旧完整代，"
-        "接续用 build，不要重复 create。需本机 embedding 与迁移 0010。",
+        "接续用 build，不要重复 create。需本机 embedding 与迁移 0011。",
         writes=True,
     )
     register(
@@ -263,14 +279,14 @@ def create_mcp(
         SemanticStatus,
         semantic.get,
         "无需模型在线即可发现作品指定层索引的 active/target；"
-        "指定 index_id 可分页读取阻塞范围。语义覆盖不代表分析进度。",
+        "指定 index_id 可分页读取阻塞范围。source_stale 表示追加部后需重建；覆盖不代表分析进度。",
     )
     register(
         "source_semantic_search",
         SemanticSearch,
         SemanticResults | CompactSemanticResults,
         lambda r: semantic_search_view(semantic.search(r), r.work_id, r.kind, r.format),
-        "在指定作品、指定层的单个索引代内按自然语言查询候选；返回实际 SourceRange，"
+        "在指定作品、指定层的单个索引代内查询候选；可选 part_id 限定分部。返回 SourceRange，"
         "用 source_read 回读。默认只查完整索引；allow_partial=true 才允许部分覆盖。"
         "分数不是文学质量；kind 支持 fulltext 和 annotation；标注命中带当前版本，"
         "须 annotation_get 回读。默认 compact：范围与顶层 work_id 合成 SourceRange；"
@@ -281,47 +297,86 @@ def create_mcp(
         SearchRequest,
         Page[SourceSearchHit] | CompactSourceResults,
         lambda r: source_search_view(search.source(r), r.work_id, r.format),
-        "在指定作品的自然段原文中匹配 1–8 个普通关键词，all/any 默认 all。"
+        "在指定作品原文中匹配 1–8 个普通关键词，all/any 默认 all；可选 part_id 限定分部。"
         "中文支持单字与连续词，ASCII 按词且忽略大小写；不解释查询表达式。"
         "按原文顺序分页，返回原文摘要和 SourceRange；无标注也可命中。"
         "默认 compact：范围与顶层 work_id 合成 SourceRange；full 含完整元数据。"
-        "需 PGroonga 与迁移 0006；未启用返回 SEARCH_UNAVAILABLE。",
+        "需 PGroonga 与 0011 空库结构；未启用返回 SEARCH_UNAVAILABLE。",
     )
     register(
         "annotation_search",
         AnnotationSearchRequest,
         Page[AnnotationSearchHit] | CompactAnnotationResults,
         lambda r: annotation_search_view(search.annotations(r), r.work_id, r.format),
-        "在指定作品的 Annotation.note 中匹配普通关键词，all/any 默认 all。"
+        "在指定作品的 Annotation.note 中匹配关键词，all/any 默认 all；part_id 按证据所在部分筛选。"
         "status 默认 active，诊断时可选 withdrawn 或 null（全部）。"
         "按创建时间和 ID 分页，返回说明摘要、版本及首个证据范围；"
         "默认 compact：范围与顶层 work_id 合成 SourceRange；full 含完整元数据。"
-        "通过 annotation_get 读取完整标注。需 PGroonga 与迁移 0010。",
+        "通过 annotation_get 读取完整标注。需 PGroonga 与迁移 0011。",
     )
 
     def file_bytes(path: str) -> bytes:
         return read_source(path, settings.max_file_bytes)
 
+    catalog = CatalogService(reading.database)
     register(
-        "work_import_validate",
+        "work_create",
+        WorkCreate,
+        CatalogWrite,
+        catalog.create,
+        "创建空作品；名称唯一，保存 request_id 以便原键重试。再通过 part_import 追加原文。",
+        writes=True,
+    )
+    register(
+        "work_update",
+        WorkUpdate,
+        CatalogWrite,
+        catalog.update,
+        "按当前 expected_version 修改作品名称；不改变原文和分析坐标。",
+        writes=True,
+    )
+    register(
+        "part_list",
+        PartsRequest,
+        Page[PartOut],
+        lambda r: reading.list_parts(r.work_id, r.limit, r.cursor),
+        "按追加顺序列出作品分部。",
+    )
+    register(
+        "part_get",
+        PartRequest,
+        PartOut,
+        lambda r: reading.get_part(r.work_id, r.part_id),
+        "读取指定作品分部及原文件摘要。",
+    )
+    register(
+        "part_update",
+        PartUpdate,
+        CatalogWrite,
+        catalog.update,
+        "按当前 expected_version 修改分部名称；不移动、替换或补写原文。",
+        writes=True,
+    )
+    register(
+        "part_import_validate",
         FileRequest,
         ValidationReport,
-        lambda r: importing.validate(file_bytes(r.file_path)),
+        lambda r: importing.validate(file_bytes(r.file_path), r.work_id),
         "按文件路径预检一份结构已确认的 TXT，不限制所在目录。"
         "只报告首个问题，不预留名称、不锁定文件。",
     )
     register(
-        "work_import",
+        "part_import",
         ImportRequest,
         ImportOut,
-        lambda r: importing.import_source(file_bytes(r.file_path), r.request_id),
+        lambda r: importing.import_source(file_bytes(r.file_path), r.request_id, r.work_id),
         "按文件路径原子导入一份已确认 TXT，不限制所在目录，不改写或覆盖。"
         "保存 request_id；超时先查询结果，"
-        "以原键及原文件重试，不要换键。相同键与字节重放返回原作品。",
+        "以原键及原文件重试，不要换键。相同键、作品与字节重放返回提交时快照；每次追加一个完整分部。",
         writes=True,
     )
     register(
-        "work_import_get",
+        "part_import_get",
         ImportResultRequest,
         ImportOut,
         lambda r: importing.result(r.request_id),
@@ -345,7 +400,7 @@ def create_mcp(
         "source_sections",
         SectionsRequest,
         Page[SectionOut],
-        lambda r: reading.list_sections(r.work_id, r.limit, r.cursor),
+        lambda r: reading.list_sections(r.work_id, r.limit, r.cursor, r.part_id),
         "分页读取作品目录，保留重名标题和空 Section。",
     )
     register(

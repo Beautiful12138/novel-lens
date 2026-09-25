@@ -33,6 +33,7 @@ class SemanticGet(RequestModel):
 
 
 class SemanticSearch(RequestModel):
+    part_id: UUID | None = None
     format: ReadingFormat = "compact"
     work_id: UUID
     kind: SemanticKind = "fulltext"
@@ -71,6 +72,7 @@ class SemanticSummary(BaseModel):
     generation_status: GenerationStatus
     coverage: AnnotationSemanticCoverage | SemanticCoverage
     last_error: str | None = None
+    source_stale: bool = False
 
 
 class SemanticBlocked(BaseModel):
@@ -114,6 +116,9 @@ class SemanticWrite(BaseModel):
 class SemanticPassage(BaseModel):
     """两层共用的原文命中，不含文学质量判断。"""
 
+    part_id: UUID
+    part_name: str
+    section_title: str
     source_range: SourceRange
     excerpt: str
     excerpt_truncated: bool
