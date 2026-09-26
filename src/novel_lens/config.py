@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     database_url: SecretStr | None = None
     embedding_config: Path | None = None
+    mcp_profile: Literal["business", "maintenance"] = "business"
     max_file_bytes: int = Field(default=64 * 1024 * 1024, ge=1)
     max_request_bytes: int = Field(default=65 * 1024 * 1024, ge=1)
 
@@ -78,6 +79,7 @@ def load_settings() -> Settings:
             "log_level": "必须为 DEBUG、INFO、WARNING、ERROR 或 CRITICAL",
             "database_url": "必须为包含数据库名的 postgresql+psycopg 连接串",
             "embedding_config": "必须为本机 embedding TOML 配置路径",
+            "mcp_profile": "必须为 business 或 maintenance",
             "max_file_bytes": "必须为正整数",
             "max_request_bytes": "必须为正整数",
         }

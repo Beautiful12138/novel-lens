@@ -1,6 +1,7 @@
 """数据库结构定义；原文写入使用单事务，查询只选择当前需要的字段。"""
 
 from sqlalchemy import (
+    BigInteger,
     CheckConstraint,
     Column,
     DateTime,
@@ -19,10 +20,12 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB
 
+from novel_lens.reference_schema import register_reference_tables
 from novel_lens.semantic_schema import register_semantic_tables
 
 metadata = MetaData()
 register_semantic_tables(metadata)
+register_reference_tables(metadata)
 
 works = Table(
     "works",
@@ -38,6 +41,13 @@ works = Table(
     ),
     CheckConstraint("visibility IN ('visible', 'hidden')", name="ck_works_visibility"),
     Column("version", Integer, nullable=False),
+    Column(
+        "reference_version",
+        BigInteger,
+        nullable=False,
+        server_default="1",
+        comment="搜索快照的目录与可见性世代；不受纯索引发布影响",
+    ),
     Column("part_count", Integer, nullable=False),
     Column("created_at", DateTime(timezone=True), server_default=func.now(), nullable=False),
     Column("section_count", Integer, nullable=False),

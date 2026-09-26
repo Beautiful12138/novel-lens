@@ -88,8 +88,10 @@ class EmbeddingClient:
         try:
             with self._guard:
                 config = read_config(self.config_path)
-                if config.context_tokens != 4096 or config.backend != "cpu":
-                    raise RuntimeFailure("语义索引要求 4096 上下文及已验证的 CPU 后端")
+                if config.context_tokens != 4096:
+                    raise RuntimeFailure("语义索引要求 4096 上下文")
+                # CPU/CUDA 共用固定模型空间；后端选择由部署验证决定。
+                # CUDA 的设备与产物仍由 check_artifacts 核验，不静默回退 CPU。
                 identity: tuple[Any, ...] = (config.model_dump_json(),)
                 for name in (config.model_path, config.executable):
                     stat = Path(name).stat()

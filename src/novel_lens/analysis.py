@@ -1,6 +1,7 @@
 """分析任务与段落进度；文学判断由调用方提交，checkpoint 共用资产事务。"""
 
 import json
+from contextlib import nullcontext
 from hashlib import sha256
 from typing import Any
 from uuid import UUID, uuid4
@@ -269,9 +270,10 @@ def store_coverage(
 class AnalysisService:
     """任务的所有新写入经共享请求账本提交；读取不会改变进度。"""
 
-    def __init__(self, database: Database) -> None:
+    def __init__(self, database: Database, connection: Connection | None = None) -> None:
         self.database = database
-        self.assets = AssetService(database)
+        self.connection = connection
+        self.assets = AssetService(database, connection)
 
     def create(self, request: AnalysisJobCreate) -> AssetWriteOut:
         """固定去重后的目标，任务进度从零开始，已有作品资产不影响初值。"""
@@ -309,8 +311,10 @@ class AnalysisService:
         return self.assets._write(request, "analysis_job_create", action)
 
     def get(self, request: AnalysisJobGet) -> AnalysisJobOut:
-        with self.database.engine.connect().execution_options(
-            isolation_level="REPEATABLE READ"
+        with (
+            nullcontext(self.connection)
+            if self.connection is not None
+            else self.database.engine.connect().execution_options(isolation_level="REPEATABLE READ")
         ) as connection:
             return job_out(
                 connection,
@@ -473,9 +477,10 @@ class AnalysisService:
                 .mappings()
                 .first()
             )
-            if guide is None:
+            if guide is None and request.style_guide_version is not None:
                 raise ServiceError("STYLE_GUIDE_NOT_FOUND", "完成任务前须建立风格导航", 404)
-            check_version(guide, request.style_guide_version)
+            if guide is not None and request.style_guide_version is not None:
+                check_version(guide, request.style_guide_version)
             validate_recovery(connection, request.work_id, request.recovery)
             return advance_job(
                 connection,
@@ -493,8 +498,10 @@ class AnalysisService:
 
     def coverage(self, request: CoverageGet) -> CoveragePage:
         """用窗口函数合并同状态与原因的相邻段落；游标绑定过滤条件及任务版本。"""
-        with self.database.engine.connect().execution_options(
-            isolation_level="REPEATABLE READ"
+        with (
+            nullcontext(self.connection)
+            if self.connection is not None
+            else self.database.engine.connect().execution_options(isolation_level="REPEATABLE READ")
         ) as connection:
             row = scoped_row(connection, jobs, request.work_id, request.job_id, "JOB_NOT_FOUND")
             if request.section_id is not None:
@@ -574,6 +581,8 @@ class AnalysisService:
             )
             if request.status is not None:
                 query = query.where(groups.c.status == request.status)
+            if request.remaining_only:
+                query = query.where(groups.c.status != "processed")
             if position is not None:
                 query = query.where(
                     tuple_(groups.c.section_order, groups.c.start)

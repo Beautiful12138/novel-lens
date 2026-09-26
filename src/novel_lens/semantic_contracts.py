@@ -12,6 +12,7 @@ SemanticKind = Literal["fulltext", "annotation"]
 
 
 class SemanticCreate(RequestModel):
+    reuse_existing: bool = False
     work_id: UUID
     kind: SemanticKind = "fulltext"
     request_id: UUID

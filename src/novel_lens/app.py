@@ -1,5 +1,6 @@
 """HTTP 应用定义，与进程启动和配置读取分离。"""
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Annotated, Literal
@@ -46,7 +47,10 @@ from novel_lens.errors import ServiceError
 from novel_lens.errors import database_error as public_database_error
 from novel_lens.http import RequestSizeLimit, upload, upload_schema
 from novel_lens.importing import ImportService
+from novel_lens.library import LibraryService
+from novel_lens.library_views import CompactLibraryPage, FullSourcePage
 from novel_lens.mcp_api import create_mcp
+from novel_lens.preparation import PreparationService
 from novel_lens.query_views import (
     CompactAnnotationResults,
     CompactSemanticResults,
@@ -56,6 +60,27 @@ from novel_lens.query_views import (
     source_search_view,
 )
 from novel_lens.reading import ReadingService
+from novel_lens.reference import ReferenceService
+from novel_lens.reference_contracts import (
+    CleanupResult,
+    CompactReferenceResult,
+    LibraryBrowse,
+    LibraryPage,
+    PreparationInspect,
+    PreparationReceipt,
+    PrepareBatch,
+    PrepareCleanup,
+    PreparedBatch,
+    PreparedFinish,
+    PreparedImport,
+    PreparedStatus,
+    PrepareFinish,
+    PrepareImport,
+    ReferenceQuery,
+    ReferenceResult,
+    SourceRead,
+)
+from novel_lens.reference_index import ReferenceIndexer
 from novel_lens.search import SearchService
 from novel_lens.search_contracts import (
     AnnotationSearchHit,
@@ -88,7 +113,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     management = WorkManagementService(database)
     assets = AssetService(database)
     search = SearchService(database)
-    semantic = SemanticService(database, EmbeddingClient(settings.embedding_config))
+    model = EmbeddingClient(settings.embedding_config)
+    semantic = SemanticService(database, model)
+    preparation = PreparationService(database, settings.max_file_bytes, model)
+    indexer = ReferenceIndexer(database, model)
+    library = LibraryService(database, model)
+    reference = ReferenceService(database, model)
     mcp = create_mcp(settings, importing, reading, assets, semantic)
     # 只允许当前监听端口；不沿用 SDK 默认允许任意本机端口的通配配置。
     names = {settings.host, "localhost"}
@@ -111,10 +141,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        stop = asyncio.Event()
+        worker = None
+        search_cleaner = None
         try:
             async with mcp.session_manager.run():
+                if settings.database_url is not None and settings.embedding_config is not None:
+                    worker = asyncio.create_task(indexer.run(stop))
+                if settings.database_url is not None:
+                    search_cleaner = asyncio.create_task(reference.sessions.run(stop))
                 yield
         finally:
+            stop.set()
+            if worker is not None:
+                await worker
+            if search_cleaner is not None:
+                await search_cleaner
             await run_in_threadpool(database.close)
 
     app = FastAPI(title="NovelLens", lifespan=lifespan)
@@ -150,6 +192,44 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/health", summary="检查 HTTP 进程存活")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.post("/preparation/import", summary="导入原文并登记准备任务")
+    def prepare_import(request: PrepareImport) -> PreparedImport:
+        return preparation.import_file(request)
+
+    @app.post("/preparation/batch", summary="原子保存本批标记和阅读进度")
+    def prepare_batch(request: PrepareBatch) -> PreparedBatch:
+        return preparation.batch(request)
+
+    @app.post("/preparation/status", summary="查询剩余范围与索引状态")
+    def prepare_status(
+        request: PreparationInspect,
+    ) -> PreparedStatus | PreparedImport | PreparedBatch | PreparedFinish:
+        return preparation.inspect(request)
+
+    @app.post("/library/browse", summary="分页浏览作品目录、标记与任务")
+    def library_browse(request: LibraryBrowse) -> LibraryPage | CompactLibraryPage:
+        return library.browse(request)
+
+    @app.post("/reference/query", summary="融合原文与标记线索查询")
+    def reference_query(request: ReferenceQuery) -> ReferenceResult | CompactReferenceResult:
+        return reference.query(request)
+
+    @app.post("/source/read", summary="连续读取原文并按需扩展上下文")
+    def source_read(request: SourceRead) -> CompactParagraphPage | CompactReadOut | FullSourcePage:
+        return library.read(request)
+
+    @app.post("/preparation/finish", summary="校验阅读与索引后完成任务")
+    def prepare_finish(request: PrepareFinish) -> PreparedFinish:
+        return preparation.finish(request)
+
+    @app.post("/preparation/cleanup", summary="明确放弃后清理整部作品")
+    def prepare_cleanup(request: PrepareCleanup) -> CleanupResult:
+        return preparation.cleanup(request)
+
+    @app.get("/preparation/receipts/{request_id}", summary="查询已提交准备请求的回执")
+    def prepare_receipt(request_id: UUID) -> PreparedImport | PreparedBatch | PreparedFinish:
+        return preparation.receipt(PreparationReceipt(request_id=request_id))
 
     @app.post(
         "/works/{work_id}/part-imports/validate",

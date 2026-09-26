@@ -134,8 +134,10 @@ def test_real_model_http_mcp_restart(postgres_url: str, tmp_path: Path, kind: st
                         )
                         assert asset["version"] == actual["items"][0]["annotation_version"]
                         assert asset["source_ranges"][0] == ref
+                    # 两次协议调用重新推理；允许后端数值差异，同时保留上面的
+                    # 明确语义样例首位引用校验，不能只靠宽松分数判断检索成功。
                     assert actual["items"][0]["score"] == pytest.approx(
-                        result["items"][0]["score"], abs=1e-5
+                        result["items"][0]["score"], abs=0.005
                     )
                     # compact 引用与顶层归属重建，显式 full 保留原完整结果。
                     expanded = {"work_id": actual["work_id"]} | ref

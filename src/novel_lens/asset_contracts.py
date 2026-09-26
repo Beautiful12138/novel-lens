@@ -438,7 +438,7 @@ class CoverageCounts(BaseModel):
 class Completion(BaseModel):
     """完成时的校准声明和导航版本，后续资产修订不回写历史依据。"""
 
-    style_guide_version: int
+    style_guide_version: int | None = None
     calibration_note: str
     limitations: str | None
 
@@ -507,7 +507,7 @@ class AnalysisJobUpdate(AnalysisJobModify):
 
 class AnalysisJobComplete(AnalysisJobModify):
     recovery: Recovery
-    style_guide_version: int = Field(ge=1)
+    style_guide_version: int | None = Field(default=None, ge=1)
     calibration_note: Nonblank
     limitations: Nonblank | None
 
@@ -527,6 +527,7 @@ class CoverageMark(AnalysisJobModify):
 class CoverageGet(ListRequest, AnalysisJobGet):
     section_id: UUID | None = None
     status: CoverageStatus | None = None
+    remaining_only: bool = False
 
 
 class CoverageItem(BaseModel):

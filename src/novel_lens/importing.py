@@ -18,10 +18,12 @@ from novel_lens.source import RULE_VERSION, SourceFailure, parse_canonical, repo
 class ImportService:
     """同一事务追加分部及完整文件；不自动转换旧数据或修改已有原文。"""
 
-    def __init__(self, database: Database, max_file_bytes: int) -> None:
+    def __init__(
+        self, database: Database, max_file_bytes: int, connection: Connection | None = None
+    ) -> None:
         self.database = database
         self.max_file_bytes = max_file_bytes
-        self.catalog = CatalogService(database)
+        self.catalog = CatalogService(database, connection)
 
     def _check_size(self, data: bytes) -> None:
         if len(data) > self.max_file_bytes:

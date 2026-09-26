@@ -2,6 +2,7 @@
 
 import json
 from collections.abc import Callable
+from contextlib import nullcontext
 from hashlib import sha256
 from typing import Any
 from uuid import UUID, uuid4
@@ -42,8 +43,9 @@ def lock_work(connection: Connection, work_id: UUID) -> WorkOut:
 
 
 class CatalogService:
-    def __init__(self, database: Database) -> None:
+    def __init__(self, database: Database, connection: Connection | None = None) -> None:
         self.database = database
+        self.connection = connection
 
     def write(
         self,
@@ -58,7 +60,11 @@ class CatalogService:
         ).hexdigest()
         key = int.from_bytes(sha256(f"catalog:{request_id}".encode()).digest()[:8], signed=True)
         try:
-            with self.database.engine.begin() as connection:
+            with (
+                nullcontext(self.connection)
+                if self.connection is not None
+                else self.database.engine.begin()
+            ) as connection:
                 connection.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": key})
                 old = (
                     connection.execute(

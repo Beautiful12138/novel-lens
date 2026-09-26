@@ -24,6 +24,7 @@ def test_defaults_do_not_read_parent_env(tmp_path: Path, monkeypatch: pytest.Mon
     monkeypatch.chdir(child)
     settings = load_settings()
     assert (settings.host, settings.port, settings.log_level) == ("127.0.0.1", 8000, "INFO")
+    assert settings.mcp_profile == "business"
 
 
 def test_environment_overrides_utf8_dotenv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -51,6 +52,7 @@ def test_environment_overrides_utf8_dotenv(tmp_path: Path, monkeypatch: pytest.M
         ("NOVEL_LENS_DATABASE_URL", "sqlite:///local.db", "postgresql+psycopg"),
         ("NOVEL_LENS_MAX_FILE_BYTES", "0", "正整数"),
         ("NOVEL_LENS_MAX_REQUEST_BYTES", "private-invalid-input", "正整数"),
+        ("NOVEL_LENS_MCP_PROFILE", "private-invalid-input", "business 或 maintenance"),
     ],
 )
 def test_invalid_environment_fails_without_input(

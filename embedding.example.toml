@@ -1,5 +1,6 @@
 # 由 AI 按 docs/部署指南.md 检查环境、选择参数后写出候选配置。
-# 这是示例，不是自动调参结果。路径相对于配置文件所在目录。
+# 这是 CPU 后备示例；部署优先验证可用且性能合适的 GPU，没有合适 GPU 时用 CPU。
+# 路径相对于配置文件所在目录，不代表自动调参结果。
 schema_version = 1
 model_contract = "qwen3-embedding-0.6b-q8_0-v1"
 executable = "data/embedding/runtime/llama-server.exe"

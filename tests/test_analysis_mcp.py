@@ -16,7 +16,7 @@ def test_analysis_tools_restart_and_errors(postgres_url: str, tmp_path: Path) ->
     async def exercise(rest: httpx.Client) -> dict[str, Any]:
         async with Client(str(rest.base_url).rstrip("/") + "/mcp") as mcp:
             tools = {tool.name: tool for tool in (await mcp.list_tools()).tools}
-            assert len(tools) == 53
+            assert len(tools) == 59
             hints = tools["analysis_checkpoint"].annotations
             assert hints and hints.destructive_hint and not hints.read_only_hint
             read_hints = tools["coverage_get"].annotations

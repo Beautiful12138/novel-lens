@@ -22,7 +22,7 @@ def test_entity_relation_tools_and_restart(postgres_url: str, tmp_path: Path) ->
     async def exercise(rest: httpx.Client) -> dict[str, Any]:
         async with Client(str(rest.base_url).rstrip("/") + "/mcp") as mcp:
             listing = (await mcp.list_tools()).tools
-            assert len(listing) == 53
+            assert len(listing) == 59
             by_name = {t.name: t for t in listing}
             assert by_name["relation_set_status"].annotations.destructive_hint  # type: ignore[union-attr]
             work = (await mcp_import(mcp, {"request_id": str(uuid4()), "file_path": str(novel)}))[

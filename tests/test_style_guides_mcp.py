@@ -16,7 +16,7 @@ def test_style_guide_tools_and_restart(postgres_url: str, tmp_path: Path) -> Non
     async def exercise(rest: httpx.Client) -> dict[str, Any]:
         async with Client(str(rest.base_url).rstrip("/") + "/mcp") as mcp:
             tools = {t.name: t for t in (await mcp.list_tools()).tools}
-            assert len(tools) == 53
+            assert len(tools) == 59
             assert tools["style_guide_get"].annotations.read_only_hint  # type: ignore[union-attr]
             assert tools["style_guide_update"].annotations.destructive_hint  # type: ignore[union-attr]
             work = http_import(

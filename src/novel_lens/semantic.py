@@ -269,6 +269,39 @@ class SemanticService:
                     {"work": request.work_id, "id": identifier, "kind": request.kind},
                 )
                 index = self._index(conn, request.work_id, identifier)
+                # 原文只追加且已有分部不可修改；同契约完整代的切片可以直接复用。
+                # 仅自动增量路径启用，原有显式重建仍可要求重新计算。
+                if (
+                    request.kind == "fulltext"
+                    and request.reuse_existing
+                    and head["active_index_id"]
+                ):
+                    old_index = self._index(conn, request.work_id, head["active_index_id"])
+                    if (
+                        old_index["contract_id"] == self.model.contract_id
+                        and old_index["status"] == "ready"
+                    ):
+                        conn.execute(
+                            text("""
+                          INSERT INTO semantic_index_items
+                          (id,index_id,work_id,kind,source_key,section_id,start_paragraph_id,
+                           end_paragraph_id,start_ordinal,end_ordinal,text_sha256,tokens,bytes,
+                           embedding,blocked_reason)
+                          SELECT gen_random_uuid(),:new,work_id,kind,source_key,section_id,
+                            start_paragraph_id,end_paragraph_id,start_ordinal,end_ordinal,
+                            text_sha256,tokens,bytes,embedding,blocked_reason
+                          FROM semantic_index_items WHERE index_id=:old AND kind='fulltext'
+                        """),
+                            {"new": identifier, "old": old_index["id"]},
+                        )
+                        conn.execute(
+                            text(
+                                "UPDATE semantic_indexes SET cursor=CAST(:cursor AS jsonb) "
+                                "WHERE id=:id"
+                            ),
+                            {"cursor": json.dumps(old_index["cursor"]), "id": identifier},
+                        )
+                        index = self._index(conn, request.work_id, identifier)
                 if request.kind == "annotation":
                     annotation_index.snapshot(conn, index)
                 result = self._write_result(conn, index)
