@@ -10,6 +10,7 @@ from novel_lens.asset_contracts import (
     AnnotationOut,
     AnnotationStatus,
     AnnotationSummary,
+    TagIdentity,
 )
 from novel_lens.contracts import Page, ReadingFormat, SourceRange
 from novel_lens.errors import ServiceError
@@ -77,6 +78,7 @@ class CompactAnnotationSummary(BaseModel):
     source_range_count: int
     note_preview: str | None
     note_truncated: bool
+    tags: list[TagIdentity]
 
 
 class CompactAnnotationPage(Page[CompactAnnotationSummary]):

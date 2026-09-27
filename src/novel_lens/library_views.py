@@ -29,6 +29,7 @@ class CompactSection(BaseModel):
 
 class CompactTag(NamedItem):
     namespace: str
+    full_name: str
     description: str
     aliases: list[str]
 
@@ -54,6 +55,7 @@ class CompactLibraryPage(BaseModel):
     annotations: CompactAnnotationPage | None = None
     annotation: CompactAnnotationOut | None = None
     tags: list[CompactTag] | None = None
+    tag_page: Page[CompactTag] | None = None
     jobs: Page[CompactJob] | None = None
 
     @model_serializer(mode="wrap")

@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 2,
+  "title": "NovelLens Studio 作品库视觉提案",
+  "extensions": {
+    "scope": {
+      "status": "pending_visual_acceptance",
+      "source": ["index.html", "studio.css", "studio.js", "assets/rain-lines.svg"],
+      "tokens": "DESIGN.md frontmatter",
+      "minimumViewportWidth": "900px",
+      "selfHostedFonts": false,
+      "generatedImagesUsed": false,
+      "backendConnected": false
+    },
+    "shadows": [
+      {"name": "cover", "value": "9px 14px 20px -9px #1c2c5152"},
+      {"name": "cover-hover", "value": "9px 20px 24px -11px #1c2c5160"}
+    ],
+    "motion": [
+      {"name": "cover", "value": "340ms cubic-bezier(.16,1,.3,1)", "properties": ["transform", "box-shadow"], "hoverTransform": "rotate(0deg) translateY(-5px)"},
+      {"name": "button", "value": "180ms ease", "properties": ["background"]}
+    ],
+    "focus": {"outline": "2px solid #3756d7", "outlineOffset": "5px"},
+    "reducedMotion": {"transitions": "none", "scrollBehavior": "auto", "hoverTransform": "none"},
+    "breakpoints": [
+      {"name": "compact-desktop", "value": "1150px", "query": "max-width"},
+      {"name": "large-desktop", "value": "1450px", "query": "min-width"}
+    ],
+    "covers": {
+      "defaultSize": "198px 280px",
+      "compactSize": "179px 253px",
+      "largeSize": "221px 312px",
+      "graphic": {"asset": "assets/rain-lines.svg", "background": "#3156df", "rotation": "-3deg", "titleFontSize": "43px", "titleFontWeight": 500},
+      "typographic": {"background": "#e5e8db", "text": "#252b23", "secondaryText": "#4a543d", "rotation": "3deg", "titleFontSize": "52px", "titleFontWeight": 650}
+    }
+  },
+  "components": [],
+  "narrative": {
+    "northStar": "现代编辑工作室",
+    "overview": "独立作品库单页视觉草案，待用户验收；采用中性浅色界面、钴蓝操作色、中文排版与图形及文字封面。",
+    "keyCharacteristics": ["固定侧栏与双列作品", "封面真实文字", "局部悬停动效", "仅使用虚构演示内容"],
+    "dos": ["保持无图文字封面的完整构图", "以代码与浏览器实际效果核对视觉"],
+    "donts": ["不将本目录草案视为项目正式设计系统", "不宣称生产数据接通或完整阅读标注功能已完成"]
+  }
+}

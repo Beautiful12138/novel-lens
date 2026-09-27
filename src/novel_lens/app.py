@@ -14,6 +14,13 @@ from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException
 from starlette.responses import JSONResponse
 
+from novel_lens.asset_contracts import (
+    AnnotationBrowse,
+    AnnotationCoverage,
+    AnnotationGet,
+    BrowsedAnnotation,
+    BrowsedAnnotationDetail,
+)
 from novel_lens.assets import AssetService
 from novel_lens.catalog import CatalogService
 from novel_lens.config import Settings
@@ -34,6 +41,7 @@ from novel_lens.contracts import (
     ReadOut,
     ReadRequest,
     SectionOut,
+    SourceRange,
     ValidationReport,
     WorkCreate,
     WorkFilter,
@@ -98,6 +106,7 @@ from novel_lens.semantic_contracts import (
     SemanticStatus,
     SemanticWrite,
 )
+from novel_lens.web import mount_webui
 from novel_lens.work_management import WorkManagementService
 
 PageLimit = Annotated[Limit, Query()]
@@ -390,6 +399,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise ServiceError("INVALID_INPUT", "路径与请求中的作品 ID 不一致")
         return semantic_search_view(semantic.search(request), work_id, request.kind, request.format)
 
+    @app.get("/works/{work_id}/sections/{section_id}", summary="读取指定章节及分部名称")
+    def get_section(work_id: UUID, section_id: UUID) -> SectionOut:
+        return reading.get_section(work_id, section_id)
+
+    @app.post("/assets/annotations/browse", summary="跨可见作品筛选标注目录")
+    def browse_annotations(request: AnnotationBrowse) -> Page[BrowsedAnnotation]:
+        return assets.browse_annotations(request)
+
+    @app.post("/assets/annotations/detail", summary="读取标注及全部引用的目录坐标")
+    def browse_annotation_detail(request: AnnotationGet) -> BrowsedAnnotationDetail:
+        return assets.browse_annotation_detail(request)
+
+    @app.post("/assets/annotations/coverage", summary="读取本页各段有效标注的完整计数")
+    def annotation_coverage(request: SourceRange) -> AnnotationCoverage:
+        return assets.annotation_coverage(request)
+
+    mount_webui(app)
     # SDK 自带 /mcp 路由，根挂载必须放在所有现有路由后，避免遮蔽 REST。
     app.mount("/", mcp_app)
     return app

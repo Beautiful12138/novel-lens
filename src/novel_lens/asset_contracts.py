@@ -158,6 +158,13 @@ class AnnotationOut(BaseModel):
     status: AnnotationStatus
 
 
+class TagIdentity(BaseModel):
+    """列表选择候选所需的标签身份，不在每条摘要重复完整定义。"""
+
+    id: UUID
+    full_name: str
+
+
 class AnnotationSummary(BaseModel):
     """候选页不携带完整 Note 或所有引用；裁剪状态显式返回。"""
 
@@ -173,6 +180,62 @@ class AnnotationSummary(BaseModel):
     entity_count: int
     note_preview: str | None
     note_truncated: bool
+    tags: list[TagIdentity]
+
+
+class AnnotationBrowse(ListRequest):
+    """用户资产目录：可跨可见作品，章节筛选始终绑定明确作品。"""
+
+    work_id: UUID | None = None
+    section_id: UUID | None = None
+    tag_ids: TagIds = Field(default_factory=list)
+    query: Nonblank | None = Field(default=None, max_length=300)
+    status: AnnotationStatus | None = "active"
+
+    @model_validator(mode="after")
+    def chapter_scope(self) -> Self:
+        if self.section_id is not None and self.work_id is None:
+            raise ValueError("章节筛选必须同时指定作品")
+        return self
+
+
+class BrowsedAnnotation(AnnotationSummary):
+    """列表补充作品及第一处引用的目录名称，不代替完整引用详情。"""
+
+    work_name: str
+    part_name: str
+    section_title: str
+
+
+class AnnotationLocation(SourceRange):
+    """原文的稳定范围和人类可读坐标；段号属于各自章节。"""
+
+    part_name: str
+    section_title: str
+    start_ordinal: int
+    end_ordinal: int
+
+
+class BrowsedAnnotationDetail(BaseModel):
+    """同一读取快照内的标注内容、标签定义和有序引用目录。"""
+
+    annotation: AnnotationOut
+    tags: list[TagOut]
+    locations: list[AnnotationLocation]
+
+
+class ParagraphAnnotationCount(BaseModel):
+    paragraph_id: UUID
+    ordinal: int
+    annotation_count: int
+
+
+class AnnotationCoverage(BaseModel):
+    """有限正文页的完整有效标注计数；与标注候选分页互相独立。"""
+
+    work_id: UUID
+    section_id: UUID
+    items: list[ParagraphAnnotationCount]
 
 
 class AssetWriteGet(RequestModel):

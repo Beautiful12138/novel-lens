@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 2,
+  "title": "NovelLens 探索与阅读视觉样稿",
+  "extensions": {
+    "scope": {
+      "exploreStatus": "direction_accepted",
+      "readingStatus": "pending_user_confirmation",
+      "source": ["index.html", "experience.css", "experience.js"],
+      "tokens": "DESIGN.md frontmatter",
+      "minimumViewportWidth": "960px",
+      "selfHostedFonts": false,
+      "backendConnected": false,
+      "chapterNavigationImplemented": false,
+      "data": "两部既有虚构作品的演示段落及标注"
+    },
+    "layout": {
+      "exploreColumns": "31% 69%",
+      "compactExploreColumns": "29% 71%",
+      "exploreHeaderHeight": "82px",
+      "readingHeaderHeight": "64px",
+      "readingToolbarHeight": "70px",
+      "readingSourceMaxWidth": "720px",
+      "annotationWidth": "320px",
+      "compactAnnotationWidth": "290px"
+    },
+    "shadows": [
+      {"name": "source-sheet", "value": "15px 25px 45px -20px #24396557"},
+      {"name": "analysis", "value": "12px 19px 30px -22px #8b3e284d"},
+      {"name": "reading", "value": "none"}
+    ],
+    "motion": {
+      "ease": "cubic-bezier(.16,1,.3,1)",
+      "sheetAnalysisTitleTransition": "750ms",
+      "workSwitchDelay": "190ms",
+      "anchorRestoreMaximumDuration": "800ms",
+      "perspective": "1500px",
+      "sourceTransform": "translate(var(--px,0px),var(--py,0px)) rotateY(-12deg) rotateX(4deg) rotateZ(-7deg)",
+      "pointerRangeX": ["-8px", "8px"],
+      "pointerRangeY": ["-6px", "6px"],
+      "analysisPointerMultiplier": -0.4,
+      "readingTransform": "none",
+      "reducedMotion": "关闭过渡、视差及平滑滚动；探索纸页保留 rotateZ(-3deg)，阅读无旋转"
+    },
+    "focus": {"outline": "2px solid #b6461b", "outlineOffset": "5px"},
+    "breakpoints": [
+      {"name": "compact-reading", "value": "1100px", "query": "max-width"},
+      {"name": "compact-explore", "value": "1200px", "query": "max-width"},
+      {"name": "large-explore", "value": "1550px", "query": "min-width"}
+    ]
+  },
+  "components": [],
+  "narrative": {
+    "northStar": "原文与分析共同成为视觉主体",
+    "overview": "探索以书名、空间原文页和引用标注形成视觉表达；阅读收起大书名及底部作品栏，展开平面正文与可收起标注栏。",
+    "keyCharacteristics": ["探索与阅读分工", "HTML 原文和标注", "SVG 引用连接", "段落锚点保持"],
+    "dos": ["保留当前标注与引用范围", "将阅读新状态标记为待用户确认"],
+    "donts": ["不宣称生产或全书章节导航完成", "不将局部样稿作为全项目最终设计系统"]
+  }
+}

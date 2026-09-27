@@ -114,6 +114,12 @@ class ReadingService:
         with self.database.engine.connect() as connection:
             return work_at(connection, work_id)
 
+    def get_section(self, work_id: UUID, section_id: UUID) -> SectionOut:
+        """解析引用的章节与分部名称；无需遍历全书目录，不能跨作品取章节。"""
+        with self.database.engine.connect() as connection:
+            work_at(connection, work_id)
+            return section_at(connection, work_id, section_id)
+
     def list_works(
         self, limit: int, cursor: str | None, visibility: WorkFilter = "visible"
     ) -> Page[WorkOut]:

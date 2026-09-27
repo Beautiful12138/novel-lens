@@ -24,6 +24,7 @@ from novel_lens.asset_contracts import (
     Namespace,
     Nonblank,
     Recovery,
+    TagIds,
     TagOut,
 )
 from novel_lens.contracts import (
@@ -272,24 +273,37 @@ class ReferenceResult(ReferencePage[ReferenceHit]):
 class LibraryBrowse(RequestModel):
     """按一种目录投影分页；不把写入操作混入导航。"""
 
-    view: Literal["works", "parts", "sections", "annotations", "jobs"] = "works"
+    view: Literal["works", "parts", "sections", "annotations", "jobs", "tags"] = "works"
     work_id: UUID | None = None
     part_id: UUID | None = None
     annotation_id: UUID | None = None
+    namespace: Namespace | None = Field(default=None, description="仅标签视图：精确分组")
+    query: Nonblank | None = Field(default=None, description="仅标签视图：名称、定义、别名字面查询")
+    tag_ids: TagIds = Field(default_factory=list, description="仅标注列表：同时具有全部标签")
+    source_range: SourceRange | None = Field(default=None, description="仅标注列表：任一引用相交")
+    status: AnnotationStatus | None = Field(
+        default=None, description="仅标注列表：null 或省略查全部状态"
+    )
     limit: int = Field(default=20, ge=1, le=100)
     cursor: str | None = None
     format: ReadingFormat = "compact"
 
     @model_validator(mode="after")
     def scope(self) -> Self:
-        if (self.view != "works") != (self.work_id is not None):
-            raise ValueError("作品列表不接受 work_id，其他视图必须指定 work_id")
+        if (self.view not in {"works", "tags"}) != (self.work_id is not None):
+            raise ValueError("作品列表和共享标签视图不接受 work_id，其他视图必须指定 work_id")
         if self.part_id is not None and self.view != "sections":
             raise ValueError("part_id 只用于筛选章节")
         if self.annotation_id is not None and (
             self.view != "annotations" or self.cursor is not None
         ):
             raise ValueError("annotation_id 只用于单条标记详情，不接受游标")
+        if self.view != "tags" and self.model_fields_set & {"namespace", "query"}:
+            raise ValueError("namespace 和 query 只用于标签视图")
+        if (self.view != "annotations" or self.annotation_id is not None) and (
+            self.model_fields_set & {"tag_ids", "source_range", "status"}
+        ):
+            raise ValueError("tag_ids、source_range 和 status 只用于标注列表")
         return self
 
 
@@ -302,6 +316,7 @@ class LibraryPage(BaseModel):
     annotations: Page[AnnotationSummary] | None = None
     annotation: AnnotationOut | None = None
     tags: list[TagOut] | None = None
+    tag_page: Page[TagOut] | None = None
     jobs: Page[AnalysisJobSummary] | None = None
     indexes: ReferenceState | None = None
 

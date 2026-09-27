@@ -20,20 +20,26 @@ from novel_lens.asset_contracts import (
     AnalysisJobComplete,
     AnalysisJobCreate,
     AnalysisJobModify,
+    AnnotationBrowse,
+    AnnotationCoverage,
     AnnotationCreate,
     AnnotationGet,
     AnnotationList,
+    AnnotationLocation,
     AnnotationOut,
     AnnotationSetStatus,
     AnnotationSummary,
     AnnotationUpdate,
     AssetWriteOut,
+    BrowsedAnnotation,
+    BrowsedAnnotationDetail,
     EntityCreate,
     EntityGet,
     EntityList,
     EntityOut,
     EntitySearch,
     EntityUpdate,
+    ParagraphAnnotationCount,
     RelationCreate,
     RelationExpand,
     RelationGet,
@@ -51,6 +57,7 @@ from novel_lens.asset_contracts import (
     StyleGuideOut,
     StyleGuideUpdate,
     TagCreate,
+    TagIdentity,
     TagList,
     TagOut,
     TagSearch,
@@ -60,16 +67,18 @@ from novel_lens.contracts import ListRequest, Page, SourceRange
 from novel_lens.cursors import decode_cursor, encode_cursor, ordinal_cursor
 from novel_lens.database import Database
 from novel_lens.errors import ServiceError
-from novel_lens.reading import paragraph_at, section_at, work_at
+from novel_lens.reading import paragraph_at, searchable_work, section_at, work_at
 from novel_lens.schema import (
     annotation_entities,
     annotations,
     entities,
     paragraphs,
+    parts,
     relation_entities,
     relation_nodes,
     relation_tags,
     relations,
+    sections,
     style_guide_entries,
     style_guide_ranges,
     style_guides,
@@ -302,6 +311,78 @@ def replace_style_guide_entries(connection: Connection, request: StyleGuideCreat
             for ordinal, ref in enumerate(entry.source_ranges, 1)
         ],
     )
+
+
+def annotation_summary_query() -> Select[Any]:
+    """统一资产摘要的数据库投影，不加载完整说明或引用正文。"""
+    first_range = (
+        select(
+            func.jsonb_build_object(
+                "work_id",
+                ranges.c.work_id,
+                "section_id",
+                ranges.c.section_id,
+                "start_paragraph_id",
+                ranges.c.start_paragraph_id,
+                "end_paragraph_id",
+                ranges.c.end_paragraph_id,
+            )
+        )
+        .where(ranges.c.annotation_id == annotations.c.id)
+        .order_by(ranges.c.ordinal)
+        .limit(1)
+        .scalar_subquery()
+    )
+    range_count = (
+        select(func.count()).where(ranges.c.annotation_id == annotations.c.id).scalar_subquery()
+    )
+    tag_count = (
+        select(func.count()).where(links.c.annotation_id == annotations.c.id).scalar_subquery()
+    )
+    entity_count = (
+        select(func.count())
+        .where(annotation_entities.c.annotation_id == annotations.c.id)
+        .scalar_subquery()
+    )
+    return select(
+        annotations.c.id,
+        annotations.c.work_id,
+        annotations.c.version,
+        annotations.c.status,
+        annotations.c.created_at,
+        annotations.c.updated_at,
+        first_range.label("first_source_range"),
+        range_count.label("source_range_count"),
+        tag_count.label("tag_count"),
+        entity_count.label("entity_count"),
+        func.substr(annotations.c.note, 1, 200).label("note_preview"),
+        func.coalesce(func.length(annotations.c.note) > 200, False).label("note_truncated"),
+    )
+
+
+def annotation_summaries(connection: Connection, rows: list[RowMapping]) -> list[AnnotationSummary]:
+    """按整页批量补充标签身份；调用方须持有一致读取快照。"""
+
+    identities: dict[UUID, list[TagIdentity]] = {row["id"]: [] for row in rows}
+    if identities:
+        for linked in connection.execute(
+            select(
+                links.c.annotation_id,
+                tags.c.id,
+                (tags.c.namespace + "/" + tags.c.name).label("full_name"),
+            )
+            .select_from(links.join(tags, links.c.tag_id == tags.c.id))
+            .where(links.c.annotation_id.in_(identities))
+            .order_by(links.c.annotation_id, tags.c.id)
+        ).mappings():
+            identities[linked["annotation_id"]].append(
+                TagIdentity(id=linked["id"], full_name=linked["full_name"])
+            )
+
+    return [
+        AnnotationSummary.model_validate(dict(row) | {"tags": identities[row["id"]]})
+        for row in rows
+    ]
 
 
 def page_rows(
@@ -842,49 +923,7 @@ class AssetService:
 
     def list_annotations(self, request: AnnotationList) -> Page[AnnotationSummary]:
         """在数据库投影摘要，不把整页完整 Note 或正文加载后再截断。"""
-        first_range = (
-            select(
-                func.jsonb_build_object(
-                    "work_id",
-                    ranges.c.work_id,
-                    "section_id",
-                    ranges.c.section_id,
-                    "start_paragraph_id",
-                    ranges.c.start_paragraph_id,
-                    "end_paragraph_id",
-                    ranges.c.end_paragraph_id,
-                )
-            )
-            .where(ranges.c.annotation_id == annotations.c.id)
-            .order_by(ranges.c.ordinal)
-            .limit(1)
-            .scalar_subquery()
-        )
-        range_count = (
-            select(func.count()).where(ranges.c.annotation_id == annotations.c.id).scalar_subquery()
-        )
-        tag_count = (
-            select(func.count()).where(links.c.annotation_id == annotations.c.id).scalar_subquery()
-        )
-        entity_count = (
-            select(func.count())
-            .where(annotation_entities.c.annotation_id == annotations.c.id)
-            .scalar_subquery()
-        )
-        query = select(
-            annotations.c.id,
-            annotations.c.work_id,
-            annotations.c.version,
-            annotations.c.status,
-            annotations.c.created_at,
-            annotations.c.updated_at,
-            first_range.label("first_source_range"),
-            range_count.label("source_range_count"),
-            tag_count.label("tag_count"),
-            entity_count.label("entity_count"),
-            func.substr(annotations.c.note, 1, 200).label("note_preview"),
-            func.coalesce(func.length(annotations.c.note) > 200, False).label("note_truncated"),
-        ).where(annotations.c.work_id == request.work_id)
+        query = annotation_summary_query().where(annotations.c.work_id == request.work_id)
         if request.status is not None:
             query = query.where(annotations.c.status == request.status)
         with (
@@ -932,9 +971,194 @@ class AssetService:
                 )
                 query = query.where(annotations.c.id.in_(overlap))
             rows, cursor = page_rows(connection, annotations, query, request)
-            return Page(
-                items=[AnnotationSummary.model_validate(row) for row in rows], next_cursor=cursor
+            return Page(items=annotation_summaries(connection, rows), next_cursor=cursor)
+
+    def annotation_coverage(self, request: SourceRange) -> AnnotationCoverage:
+        """聚合本页全部有效关联；重叠引用按标注去重，禁止查询无限范围。"""
+        with (
+            self.database.engine.connect().execution_options(
+                isolation_level="REPEATABLE READ"
+            ) as connection,
+            connection.begin(),
+        ):
+            searchable_work(connection, request.work_id)
+            first, last = range_bounds(connection, request.work_id, request)
+            if last - first + 1 > 200:
+                raise ServiceError("RANGE_TOO_LARGE", "页边标注一次最多查询 200 段")
+            start, end = paragraphs.alias("range_start"), paragraphs.alias("range_end")
+            matching = (
+                select(
+                    ranges.c.annotation_id,
+                    start.c.ordinal.label("start"),
+                    end.c.ordinal.label("end"),
+                )
+                .select_from(
+                    ranges.join(annotations, ranges.c.annotation_id == annotations.c.id)
+                    .join(start, ranges.c.start_paragraph_id == start.c.id)
+                    .join(end, ranges.c.end_paragraph_id == end.c.id)
+                )
+                .where(
+                    ranges.c.work_id == request.work_id,
+                    ranges.c.section_id == request.section_id,
+                    annotations.c.status == "active",
+                    start.c.ordinal <= last,
+                    end.c.ordinal >= first,
+                )
+                .subquery()
             )
+            query = (
+                select(
+                    paragraphs.c.id.label("paragraph_id"),
+                    paragraphs.c.ordinal,
+                    func.count(func.distinct(matching.c.annotation_id)).label("annotation_count"),
+                )
+                .select_from(
+                    paragraphs.outerjoin(
+                        matching,
+                        (paragraphs.c.ordinal >= matching.c.start)
+                        & (paragraphs.c.ordinal <= matching.c.end),
+                    )
+                )
+                .where(
+                    paragraphs.c.section_id == request.section_id,
+                    paragraphs.c.ordinal.between(first, last),
+                )
+                .group_by(paragraphs.c.id, paragraphs.c.ordinal)
+                .order_by(paragraphs.c.ordinal)
+            )
+            return AnnotationCoverage(
+                work_id=request.work_id,
+                section_id=request.section_id,
+                items=[
+                    ParagraphAnnotationCount.model_validate(row)
+                    for row in connection.execute(query).mappings()
+                ],
+            )
+
+    def browse_annotation_detail(self, request: AnnotationGet) -> BrowsedAnnotationDetail:
+        """批量解析引用的分部、章节和段号，避免前端逐处猜测或下载整段正文。"""
+        with (
+            self.database.engine.connect().execution_options(
+                isolation_level="REPEATABLE READ"
+            ) as connection,
+            connection.begin(),
+        ):
+            searchable_work(connection, request.work_id)
+            row = scoped_row(
+                connection,
+                annotations,
+                request.work_id,
+                request.annotation_id,
+                "ANNOTATION_NOT_FOUND",
+            )
+            annotation = annotation_out(connection, row)
+            start, end = paragraphs.alias("quote_start"), paragraphs.alias("quote_end")
+            locations = connection.execute(
+                select(
+                    ranges.c.work_id,
+                    ranges.c.section_id,
+                    ranges.c.start_paragraph_id,
+                    ranges.c.end_paragraph_id,
+                    parts.c.name.label("part_name"),
+                    sections.c.title.label("section_title"),
+                    start.c.ordinal.label("start_ordinal"),
+                    end.c.ordinal.label("end_ordinal"),
+                )
+                .select_from(
+                    ranges.join(start, ranges.c.start_paragraph_id == start.c.id)
+                    .join(end, ranges.c.end_paragraph_id == end.c.id)
+                    .join(sections, ranges.c.section_id == sections.c.id)
+                    .join(parts, sections.c.part_id == parts.c.id)
+                )
+                .where(ranges.c.annotation_id == annotation.id)
+                .order_by(ranges.c.ordinal)
+            ).mappings()
+            result = BrowsedAnnotationDetail(
+                annotation=annotation,
+                tags=[
+                    tag_out(tag)
+                    for tag in connection.execute(
+                        select(tags).where(tags.c.id.in_(annotation.tag_ids)).order_by(tags.c.id)
+                    ).mappings()
+                ],
+                locations=[AnnotationLocation.model_validate(location) for location in locations],
+            )
+            if len(result.model_dump_json().encode("utf-8")) > MAX_ASSET_RESULT_BYTES:
+                raise ServiceError("RESULT_TOO_LARGE", "标注详情超过 1 MiB")
+            return result
+
+    def browse_annotations(self, request: AnnotationBrowse) -> Page[BrowsedAnnotation]:
+        """跨可见作品分页浏览；过滤和名称、摘要来自同一个一致快照。"""
+        first_section = (
+            select(ranges.c.section_id)
+            .where(ranges.c.annotation_id == annotations.c.id)
+            .order_by(ranges.c.ordinal)
+            .limit(1)
+            .correlate(annotations)
+            .scalar_subquery()
+        )
+        query = (
+            annotation_summary_query()
+            .add_columns(
+                works.c.name.label("work_name"),
+                parts.c.name.label("part_name"),
+                sections.c.title.label("section_title"),
+            )
+            .join(works, works.c.id == annotations.c.work_id)
+            .join(sections, sections.c.id == first_section)
+            .join(parts, parts.c.id == sections.c.part_id)
+            .where(works.c.visibility == "visible")
+        )
+        if request.work_id is not None:
+            query = query.where(annotations.c.work_id == request.work_id)
+        if request.status is not None:
+            query = query.where(annotations.c.status == request.status)
+        if request.query is not None:
+            query = query.where(
+                annotations.c.note.ilike(literal_pattern(request.query), escape="\\")
+            )
+        if request.section_id is not None:
+            # 章节可能位于第二处引用；不能只过滤列表展示的第一处引用。
+            query = query.where(
+                annotations.c.id.in_(
+                    select(ranges.c.annotation_id).where(ranges.c.section_id == request.section_id)
+                )
+            )
+        if request.tag_ids:
+            query = query.where(
+                annotations.c.id.in_(
+                    select(links.c.annotation_id)
+                    .where(links.c.tag_id.in_(request.tag_ids))
+                    .group_by(links.c.annotation_id)
+                    .having(func.count() == len(request.tag_ids))
+                )
+            )
+        with (
+            self.database.engine.connect().execution_options(
+                isolation_level="REPEATABLE READ"
+            ) as connection,
+            connection.begin(),
+        ):
+            if request.work_id is not None:
+                searchable_work(connection, request.work_id)
+                if request.section_id is not None:
+                    section_at(connection, request.work_id, request.section_id)
+            require_tags(connection, request.tag_ids)
+            rows, cursor = page_rows(connection, annotations, query, request)
+            summaries = annotation_summaries(connection, rows)
+            result = Page[BrowsedAnnotation](
+                items=[
+                    BrowsedAnnotation.model_validate(
+                        summary.model_dump()
+                        | {key: row[key] for key in ("work_name", "part_name", "section_title")}
+                    )
+                    for summary, row in zip(summaries, rows, strict=True)
+                ],
+                next_cursor=cursor,
+            )
+            if len(result.model_dump_json().encode("utf-8")) > MAX_ASSET_RESULT_BYTES:
+                raise ServiceError("RESULT_TOO_LARGE", "结果超过 1 MiB，请减小 limit")
+            return result
 
     def create_entity(self, request: EntityCreate) -> AssetWriteOut:
         """创建独立身份；同名允许并存，重复请求由资产请求键处理。"""

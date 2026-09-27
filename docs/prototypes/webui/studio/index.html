@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NovelLens · 作品库视觉提案</title>
+  <link rel="stylesheet" href="studio.css">
+</head>
+<body>
+  <svg class="symbols" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>
+    <symbol id="i-library" viewBox="0 0 24 24"><path d="M4 4h5v16H4zM12 4h3v16h-3zM18 5l3-1 4 15-3 1z" transform="translate(-1 0)"/></symbol>
+    <symbol id="i-tag" viewBox="0 0 24 24"><path d="M3 4h8l10 10-7 7L3 10z"/><circle cx="7.5" cy="8" r="1"/></symbol>
+    <symbol id="i-note" viewBox="0 0 24 24"><path d="M5 3h14v18H5zM9 8h6M9 12h6M9 16h3"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M4 12h15m-6-6 6 6-6 6"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></symbol>
+  </defs></svg>
+  <a href="#main" class="skip">跳到作品库</a>
+  <aside class="sidebar">
+    <a class="brand" href="./" aria-label="NovelLens 作品库">
+      <svg viewBox="0 0 36 36" aria-hidden="true"><path d="M7 8h10v21H7zM20 8h9v21h-9z"/><circle cx="18" cy="18" r="13"/></svg><span>NovelLens<span class="brand-cn">小说 · 阅读与理解</span></span>
+    </a>
+    <nav aria-label="主导航">
+      <a class="nav-item current" href="./" aria-current="page"><svg><use href="#i-library"/></svg>作品库<span class="nav-count">2</span></a>
+      <button class="nav-item" disabled title="本轮只展示作品库视觉"><svg><use href="#i-tag"/></svg>标签库</button>
+      <button class="nav-item" disabled title="本轮只展示作品库视觉"><svg><use href="#i-note"/></svg>标注库</button>
+      <button class="nav-item" disabled title="本轮只展示作品库视觉"><svg><use href="#i-search"/></svg>原文检索</button>
+    </nav>
+    <div class="sidebar-bottom"><span class="edition-mark">N<span>／</span>L</span><p>从原文出发。</p><a href="../index.html">查看旧版交互原型<svg><use href="#i-arrow"/></svg></a></div>
+  </aside>
+  <main id="main">
+    <header class="page-heading">
+      <div><h1>作品库<span class="heading-dot">.</span></h1><p>每一部作品，都值得回到原文。</p></div>
+      <span class="demo-label">视觉提案<span></span>演示内容</span>
+    </header>
+    <div class="toolbar">
+      <div class="filters" role="group" aria-label="按准备状态筛选">
+        <button data-filter="all" aria-pressed="true">全部作品 <span>2</span></button>
+        <button data-filter="ready" aria-pressed="false">已就绪 <span>1</span></button>
+        <button data-filter="preparing" aria-pressed="false">准备中 <span>1</span></button>
+      </div>
+      <label class="search"><svg><use href="#i-search"/></svg><input id="search" type="search" placeholder="搜索作品名称" aria-label="搜索作品名称" autocomplete="off"></label>
+    </div>
+    <section class="books" aria-label="作品列表">
+      <article class="book" data-book="rain" data-status="ready" data-title="雨停之前">
+        <div class="book-stage blue-stage">
+          <div class="cover rain-cover" aria-label="雨停之前，图形封面">
+            <img src="assets/rain-lines.svg" alt="蓝色平面与逐渐疏开的雨线构成的抽象封面" width="240" height="340">
+            <div class="cover-title">雨停<span>之前</span></div>
+            <span class="cover-foot">雨停之前<span>正文 · 两章</span></span>
+          </div>
+          <span class="stage-caption">图形封面</span>
+        </div>
+        <div class="book-info">
+          <div class="book-title-line"><h2>雨停之前</h2><span class="ready state"><svg><use href="#i-check"/></svg>已就绪</span></div>
+          <p class="metadata">2 章<span>·</span>正文</p>
+          <p class="book-excerpt">雨从午后下到天黑。许苓把最后一摞碗放回架上，才发现门口那把黑伞还在。</p>
+          <div class="book-actions"><button class="open-book" data-open="rain">打开作品<svg><use href="#i-arrow"/></svg></button><button class="text-button" data-status-info="rain">准备情况</button></div>
+        </div>
+      </article>
+      <article class="book" data-book="night" data-status="preparing" data-title="夜班归途">
+        <div class="book-stage silver-stage">
+          <div class="cover type-cover" aria-label="夜班归途，无图文字封面">
+            <div class="type-cover-top">夜班归途<span>正文 · 一章</span></div>
+            <div class="type-cover-title">夜班<br><span>归途</span><span class="type-period">。</span></div>
+            <div class="type-cover-foot"><span>末班车</span><svg viewBox="0 0 44 20" aria-hidden="true"><path d="M0 10h39M30 1l9 9-9 9"/></svg></div>
+          </div>
+          <span class="stage-caption">无图 · 文字封面</span>
+        </div>
+        <div class="book-info">
+          <div class="book-title-line"><h2>夜班归途</h2><span class="preparing state"><span class="status-dot"></span>准备中</span></div>
+          <p class="metadata">1 章<span>·</span>正文</p>
+          <p class="book-excerpt">最后一班车停在路口，司机没有熄火。周启跑到车门前，先把手里的饭盒递了上去。</p>
+          <div class="book-actions"><button class="open-book" data-open="night">打开作品<svg><use href="#i-arrow"/></svg></button><button class="text-button" data-status-info="night">准备情况</button></div>
+        </div>
+      </article>
+    </section>
+    <section id="empty" class="empty" hidden><svg><use href="#i-search"/></svg><h2>没有找到这部作品</h2><p>试试其他书名，或清除当前筛选。</p><button id="clear-search" class="open-book">清除筛选<svg><use href="#i-arrow"/></svg></button></section>
+    <p id="result-count" class="sr-only" role="status" aria-live="polite">显示 2 部作品</p>
+    <section id="work-preview" class="work-preview" hidden aria-labelledby="preview-title" tabindex="-1">
+      <div class="preview-top"><span id="preview-kind">原文预览</span><button id="close-preview" class="icon-button" aria-label="关闭预览"><svg><use href="#i-close"/></svg></button></div>
+      <h2 id="preview-title"></h2><p id="preview-meta" class="metadata"></p><div id="preview-content"></div>
+      <p class="preview-hint">本页仅预览演示内容，完整阅读与修订见旧版交互原型。</p>
+    </section>
+    <footer class="page-footer"><span>已显示全部 <span id="visible-count">2</span> 部作品</span><span>内容为虚构样例，未连接业务数据库。</span></footer>
+  </main>
+  <script src="studio.js"></script>
+</body>
+</html>

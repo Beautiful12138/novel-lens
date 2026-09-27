@@ -35,3 +35,10 @@ Thumbs.db
 
 # 本地 IDE 配置
 /.idea/
+
+# 正式前端的构建结果由 npm run build 生成
+/src/novel_lens/webui/
+/web/*.tsbuildinfo
+
+# 本地设计审查截图与临时报告
+/.impeccable/

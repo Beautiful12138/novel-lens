@@ -10,6 +10,8 @@ from novel_lens.asset_contracts import (
     AnalysisJobList,
     AnnotationGet,
     AnnotationList,
+    TagList,
+    TagSearch,
 )
 from novel_lens.assets import AssetService, range_bounds
 from novel_lens.contracts import (
@@ -74,6 +76,11 @@ class LibraryService:
         if full.annotations is not None:
             assert request.work_id is not None
             result.annotations = annotation_list_view(full.annotations, request.work_id, "compact")  # type: ignore[assignment]
+        if full.tag_page is not None:
+            result.tag_page = Page[CompactTag](
+                items=[CompactTag.model_validate(tag.model_dump()) for tag in full.tag_page.items],
+                next_cursor=full.tag_page.next_cursor,
+            )
         if full.annotation is not None:
             result.annotation = annotation_view(full.annotation, "compact")  # type: ignore[assignment]
             result.tags = [CompactTag.model_validate(tag.model_dump()) for tag in full.tags or []]
@@ -97,6 +104,22 @@ class LibraryService:
         return self._bounded(result)
 
     def _browse(self, request: LibraryBrowse) -> LibraryPage:
+        if request.view == "tags":
+            tag_request = (
+                TagSearch(
+                    query=request.query,
+                    namespace=request.namespace,
+                    limit=request.limit,
+                    cursor=request.cursor,
+                )
+                if request.query is not None
+                else TagList(
+                    namespace=request.namespace, limit=request.limit, cursor=request.cursor
+                )
+            )
+            return LibraryPage(
+                view="tags", tag_page=AssetService(self.database).list_tags(tag_request)
+            )
         if request.view == "works":
             return LibraryPage(
                 view=request.view, works=self.reading.list_works(request.limit, request.cursor)
@@ -134,7 +157,9 @@ class LibraryService:
                             work_id=request.work_id,
                             limit=request.limit,
                             cursor=request.cursor,
-                            status=None,
+                            status=request.status,
+                            tag_ids=request.tag_ids,
+                            source_range=request.source_range,
                         )
                     )
             case "jobs":

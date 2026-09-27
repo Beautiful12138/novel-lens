@@ -810,7 +810,9 @@ def create_mcp(
             LibraryBrowse,
             LibraryPage | CompactLibraryPage,
             library.browse,
-            "分页浏览可见作品、分部、章节、标记或任务；标记详情提供 annotation_id。"
+            "分页浏览作品、分部、章节、标记、任务或共享标签。tags 不带 work_id，"
+            "可按 namespace/query 查名称、定义和别名；annotations 在作品内按 tag_ids、"
+            "source_range、status 筛选，列表返回简短标签身份，详情提供 annotation_id。"
             "先定位参考范围，再查询和读取原文；目录不代表已阅读或分析完成。",
         )
         register(

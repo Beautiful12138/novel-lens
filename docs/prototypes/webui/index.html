@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NovelLens · 阅读与标注视觉样稿</title>
+  <link rel="stylesheet" href="wireframe.css">
+</head>
+<body>
+  <a class="skip" href="#main">跳到正文</a>
+  <div class="prototype">
+    <span><strong>PC 视觉样稿</strong> · 虚构样例，仅在本页模拟，刷新重置</span>
+    <div class="tools">
+      <label for="scenario">演示情境</label>
+      <select id="scenario"><option value="normal">正常</option><option value="failure">标注保存失败</option><option value="conflict">标注版本冲突</option><option value="busy">作品删除占用</option></select>
+      <button id="reset">重置演示</button>
+    </div>
+  </div>
+  <header class="app-header">
+    <a href="#" id="brand" aria-label="NovelLens 作品库">NovelLens</a>
+    <nav aria-label="主导航"><button data-nav="library">作品库</button><button data-nav="read">阅读与标注</button><button data-nav="tags">标签库</button><button data-nav="marks">标注库</button><button data-nav="search">原文检索</button></nav>
+    <span class="header-note">用户阅读工作区</span>
+  </header>
+  <main id="main" tabindex="-1"></main>
+  <div id="notice" role="status" aria-live="polite"></div>
+  <dialog id="tag-dialog" aria-labelledby="tag-title">
+    <form id="tag-form">
+      <div class="panel-heading"><h2 id="tag-title">创建标签</h2><button type="button" data-close="tag-dialog" aria-label="关闭标签窗口">关闭</button></div>
+      <p class="hint" id="tag-impact">标签为全库共享资产。创建成功后独立保存；取消标注不会删除这个标签。</p>
+      <label for="tag-namespace">标签分组</label><input id="tag-namespace" required maxlength="64" value="写法" pattern="[^/]+">
+      <label for="tag-name">名称</label><input id="tag-name" required maxlength="256" pattern="[^/]+">
+      <label for="tag-description">定义</label><textarea id="tag-description" rows="3" required></textarea>
+      <label for="tag-aliases">别名（可选，用中文逗号分隔）</label><input id="tag-aliases">
+      <p id="tag-error" class="error" role="alert"></p>
+      <div class="actions"><button type="button" data-close="tag-dialog">取消</button><button type="submit" class="primary">保存标签</button></div>
+    </form>
+  </dialog>
+  <dialog id="delete-dialog" aria-labelledby="delete-title">
+    <form id="delete-form">
+      <div class="panel-heading"><h2 id="delete-title">删除整部作品</h2><button type="button" data-close="delete-dialog">关闭</button></div>
+      <p>将删除 <strong id="delete-work-name"></strong> 的原文、分析标注、任务、进度与索引，无法撤销。</p>
+      <p class="hint">共享标签、其他作品、外部 TXT 和备份保留。当前为演示，不操作真实数据库。</p>
+      <label for="delete-confirm">输入完整作品名称确认</label><input id="delete-confirm" autocomplete="off" required>
+      <p id="delete-error" class="error" role="alert"></p>
+      <div class="actions"><button type="button" data-close="delete-dialog">保留作品</button><button type="submit" id="delete-submit" class="danger" disabled>永久删除</button></div>
+    </form>
+  </dialog>
+  <dialog id="leave-dialog" aria-labelledby="leave-title">
+    <h2 id="leave-title">标注尚未保存</h2><p>离开会放弃当前草稿，已创建的共享标签仍会保留。</p>
+    <div class="actions"><button data-close="leave-dialog">继续编辑</button><button id="leave-confirm" class="primary">放弃草稿并继续</button></div>
+  </dialog>
+  <dialog id="manage-dialog" aria-labelledby="manage-title">
+    <div class="panel-heading"><h2 id="manage-title">作品管理</h2><button data-close="manage-dialog">关闭</button></div>
+    <p id="manage-name"></p><p class="hint">管理作品范围与数据。删除作品不会删除全库共享标签或外部文件。</p>
+    <div class="actions"><button id="manage-status">查看准备情况</button><button id="manage-delete" class="danger">删除整部作品</button></div>
+  </dialog>
+  <dialog id="status-dialog" aria-labelledby="status-title">
+    <div class="panel-heading"><h2 id="status-title">准备情况</h2><button data-close="status-dialog">关闭</button></div>
+    <div id="status-content"></div>
+  </dialog>
+  <script src="asset-library.js"></script>
+  <script src="wireframe.js"></script>
+</body>
+</html>

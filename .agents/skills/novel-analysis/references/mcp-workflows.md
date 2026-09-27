@@ -4,7 +4,15 @@
 
 ## 入口与文件
 
-`library_browse` 的 `view` 为 `works`、`parts`、`sections`、`annotations` 或 `jobs`，默认 works。其他视图必须提供 `work_id`；章节可用 `part_id` 筛选，标记详情使用 `annotation_id`。列表支持 `limit` 和 `cursor`；详情返回的 `tags` 提供当前标签定义，便于修订时保留或调整。
+`library_browse` 的 `view` 为 `works`、`tags`、`parts`、`sections`、`annotations` 或 `jobs`，默认 works。works 和全库共享 tags 不带 work_id，其他视图必须提供 work_id。章节可用 part_id 筛选。列表支持 limit/cursor；续页保留原筛选，只有 format 可在 compact/full 间切换而不改变结果。
+
+查旧的最短路径：
+
+1. 标签未知时用 `library_browse({view:"tags",query:"要查的名称或别名",namespace?:"分组"})`，从 tag_page.items 读取 id、完整名称、定义和别名；省略 query 浏览词表。query 是字面子串查询，不是语义召回。共享标签存在不代表本作品已经使用。
+2. 用 `library_browse({view:"annotations",work_id,tag_ids:[查到的标签ID],status:"active"})` 找本作品已有观察；多个 ID 要求同时具有。也可用 source_range 查任一引用相交的标记。status 可为 withdrawn 或 null，省略保持目录原有的全部状态行为。列表 tags 只有 id/full_name，不能用预览内容覆盖修订。
+3. 选定后用 `library_browse({view:"annotations",work_id,annotation_id,format:"full"})` 读取完整说明、全部引用、版本和 tags 定义；详情不混入列表筛选参数。已有明确 ID 时直接执行本步。
+
+标签视图只接受 namespace/query；标注列表才接受 tag_ids/source_range/status。查同义称呼时先核对定义和上下文，不为相同人物或相同标签强制合并不同观察。
 
 同一故事的分部属于同一作品，追加须用已有 work_id；无分部的小说可用“正文”作为分部名。作品、标题和归属清楚时自行处理，存在实质歧义才询问，不要求用户命名工具模式或安排中间步骤。
 
@@ -43,6 +51,10 @@
 任务已 completed 时，先取得当前任务和标记详情，修订批次另传非空 `reopen_reason` 并包含至少一条标记。服务将重开、标记修订和进度保存为一次原子操作，保留已有覆盖、清除旧完成说明；失败仍为原完成状态。后续运行中批次不传 reopen_reason；修订完成后等待索引同步，再调用 prepare_finish。原因由 AI 根据修订请求填写，不增加普通步骤的用户确认。
 
 `recovery` 最少包含非空 `next_action`，按需要补充有证据的 facts、open_questions、next_range；不复制全文或推理过程。`outcome_note` 简述本批处理结论，零新标记批次使用 `marks=[]`。单批最多 50 条标记，跨章处理分批提交，不为了填满上限制造标记。
+
+next_action 记录具体未完成操作，例如“回读所列范围并补充 annotation_id=… 的证据，然后继续下一章”；必要坐标放在 facts/open_questions 的 source_ranges 或 next_range 中。facts 保存已核对事实，open_questions 保存原文尚不能确定的问题，不能把未写入操作伪装成文学未知。recovery 是替换保存，下一批须保留仍有效的待办，完成后再移除。已读范围的持久进度、标记保存和索引就绪分别核对。
+
+批次的 source_range 是本次实际处理范围；每条 marks 的 source_ranges 是该观察的全部证据，可包括同作品其他章节，两者都必须提供真实坐标。补充旧观察时，在当前完整 source_ranges 基础上保留有效旧引用并加入新引用，去除完全重复范围，不拼接不连续原文。新旧标记可以在一个 prepare_batch 原子提交；回执成功才表示补充已落库。
 
 全部成果、进度、索引待办和回执同一事务提交。本批任一校验失败整批回滚，保留之前成功批次。成功回执给出新的任务版本；继续处理下一范围。
 
