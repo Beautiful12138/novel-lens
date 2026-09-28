@@ -4,7 +4,8 @@ import type { Page, Work } from './api';
 import { Empty, Pager, Status } from './components';
 import { Reader } from './Reader';
 import { AnnotationLibrary, TagLibrary } from './AssetLibrary';
-import type { AssetJump } from './AssetLibrary';
+import { ReferenceSearch } from './ReferenceSearch';
+import type { SearchJump } from './ReferenceSearch';
 
 function Works({ onNavigate }: { onNavigate: () => void }) {
   const [paging, setPaging] = useState(firstPage);
@@ -63,13 +64,13 @@ function Works({ onNavigate }: { onNavigate: () => void }) {
   );
 }
 
-type ViewName = 'works' | 'reader' | 'tags' | 'annotations';
+type ViewName = 'works' | 'reader' | 'tags' | 'annotations' | 'search';
 function routeFromHash() {
   const locationInfo = parseLocation(location.hash);
   const page = new URLSearchParams(location.hash.slice(1)).get('view');
   const view: ViewName = locationInfo.work
     ? 'reader'
-    : page === 'tags' || page === 'annotations'
+    : page === 'tags' || page === 'annotations' || page === 'search'
       ? page
       : 'works';
   return { ...locationInfo, view };
@@ -79,10 +80,11 @@ function routeFromHash() {
 export default function App() {
   const [route, setRoute] = useState(routeFromHash);
   const lastWork = useRef(route);
-  const [jump, setJump] = useState<(AssetJump & { token: number }) | null>(null);
+  const [jump, setJump] = useState<(SearchJump & { token: number }) | null>(null);
   const jumpSequence = useRef(0);
-  const [returnSource, setReturnSource] = useState<'tags' | 'annotations' | null>(null);
+  const [returnSource, setReturnSource] = useState<'tags' | 'annotations' | 'search' | null>(null);
   const [visited, setVisited] = useState({
+    search: route.view === 'search',
     tags: route.view === 'tags',
     annotations: route.view === 'annotations',
   });
@@ -93,14 +95,18 @@ export default function App() {
     return () => window.removeEventListener('hashchange', changed);
   }, []);
   useEffect(() => {
-    if (route.view === 'tags' || route.view === 'annotations')
+    if (route.view === 'tags' || route.view === 'annotations' || route.view === 'search')
       setVisited((previous) => ({ ...previous, [route.view]: true }));
-    const title = { works: '作品库', reader: '阅读与标注', tags: '标签库', annotations: '标注库' }[
-      route.view
-    ];
+    const title = {
+      search: '原文检索',
+      works: '作品库',
+      reader: '阅读与标注',
+      tags: '标签库',
+      annotations: '标注库',
+    }[route.view];
     document.title = `NovelLens · ${title}`;
   }, [route.view]);
-  function openAsset(source: 'tags' | 'annotations', target: AssetJump) {
+  function openAsset(source: 'tags' | 'annotations' | 'search', target: SearchJump) {
     setReturnSource(source);
     setJump({ ...target, token: ++jumpSequence.current });
     const hash = `#work=${target.workId}&section=${target.range.section_id}`;
@@ -137,6 +143,9 @@ export default function App() {
               阅读与标注
             </a>
           )}
+          <a href="#view=search" aria-current={route.view === 'search' ? 'page' : undefined}>
+            原文检索
+          </a>
           <a href="#view=tags" aria-current={route.view === 'tags' ? 'page' : undefined}>
             标签库
           </a>
@@ -163,7 +172,9 @@ export default function App() {
               initialAnnotationId={target?.annotationId}
               active={route.view === 'reader'}
               returnLabel={
-                returnSource ? `返回${returnSource === 'tags' ? '标签库' : '标注库'}` : undefined
+                returnSource
+                  ? `返回${returnSource === 'search' ? '检索结果' : returnSource === 'tags' ? '标签库' : '标注库'}`
+                  : undefined
               }
               onReturn={() => {
                 const source = returnSource;
@@ -171,6 +182,11 @@ export default function App() {
                 location.hash = `#view=${source}`;
               }}
             />
+          </div>
+        )}
+        {visited.search && (
+          <div hidden={route.view !== 'search'} className="view">
+            <ReferenceSearch onOpen={(target) => openAsset('search', target)} />
           </div>
         )}
         {visited.tags && (

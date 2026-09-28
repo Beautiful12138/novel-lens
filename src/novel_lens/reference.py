@@ -21,9 +21,19 @@ from novel_lens.reference_contracts import (
     ReferenceScope,
 )
 from novel_lens.reference_index import CLUES_SQL, index_state
+from novel_lens.reference_keywords import keyword_terms, previews
 from novel_lens.reference_sessions import ReferenceSessions
 
 CHANNEL_WINDOW = 300
+
+
+def fusion_score(ranks: dict[str, int]) -> float:
+    """完整问句的语义为主，字面匹配提供低权重补充。
+
+    分词只保留了局部词义，不能因为一个词同时出现于原文和说明，
+    就把这两个字面命中视为完整意图的双重证明。每个字面通道权重为 0.25。
+    """
+    return sum((0.25 if c.endswith("keyword") else 1.0) / (60 + r) for c, r in ranks.items())
 
 
 def fuse(channels: dict[str, list[dict[str, Any]]], limit: int) -> list[dict[str, Any]]:
@@ -38,7 +48,7 @@ def fuse(channels: dict[str, list[dict[str, Any]]], limit: int) -> list[dict[str
                 candidate["annotations"].add(row["annotation_id"])
 
     def order(row: dict[str, Any]) -> tuple[Any, ...]:
-        score = sum(1 / (60 + rank) for rank in row["ranks"].values())
+        score = fusion_score(row["ranks"])
         return (
             -score,
             str(row.get("work_id", "")),
@@ -251,12 +261,12 @@ class ReferenceService:
         channels = self._candidates(conn, request, scope_sql, params)
         limited = any(len(rows) > CHANNEL_WINDOW for rows in channels.values())
         fused = fuse({name: rows[:CHANNEL_WINDOW] for name, rows in channels.items()}, 1200)
+        assert request.query is not None
+        terms = keyword_terms(request.query, request.terms)
+        excerpts = previews(conn, fused, terms)
         hits = []
-        for row in fused:
-            preview = conn.execute(
-                text("SELECT left(text,200),length(text)>200 FROM paragraphs WHERE id=:p"),
-                {"p": row["start_paragraph_id"]},
-            ).one()
+        for position, row in enumerate(fused):
+            preview = excerpts[position]
             hits.append(
                 ReferenceHit(
                     work_name=row["work_name"],
@@ -271,7 +281,7 @@ class ReferenceService:
                     section_title=row["section_title"],
                     excerpt=preview[0],
                     excerpt_truncated=preview[1] or row["start_ordinal"] != row["end_ordinal"],
-                    score=sum(1 / (60 + rank) for rank in row["ranks"].values()),
+                    score=fusion_score(row["ranks"]),
                     channels=sorted(row["ranks"]),
                     annotation_ids=sorted(row["annotations"]),
                 ).model_dump(mode="json")
@@ -296,6 +306,7 @@ class ReferenceService:
                     "scope": normalized,
                     "query": request.query,
                     "terms": sorted(set(request.terms)),
+                    "keyword_terms": terms,
                     "exclude_intervals": excluded,
                     "works": diagnostics,
                 },
@@ -386,7 +397,8 @@ class ReferenceService:
         """
         )
         source_unions, clue_unions = [], []
-        for n, term in enumerate(dict.fromkeys([request.query, *request.terms])):
+        assert request.query is not None
+        for n, term in enumerate(keyword_terms(request.query, request.terms)):
             params[f"term{n}"] = term
             source_unions.append(f"""SELECT p.id FROM paragraphs p
                 JOIN sections s ON s.id=p.section_id
@@ -402,8 +414,15 @@ class ReferenceService:
               p.ordinal AS start_ordinal,p.ordinal AS end_ordinal
             FROM ranked k JOIN paragraphs p ON p.id=k.id
             JOIN sections s ON s.id=p.section_id {owners}
+            LEFT JOIN LATERAL (
+              SELECT min(i.embedding <=> CAST(:vector AS vector)) AS distance
+              FROM semantic_index_items i WHERE i.section_id=p.section_id
+                AND i.index_id=ANY(CAST(:indices AS uuid[]))
+                AND p.ordinal BETWEEN i.start_ordinal AND i.end_ordinal
+                AND i.embedding IS NOT NULL
+            ) semantic ON true
             WHERE {unread("p.ordinal", "p.ordinal")}
-            ORDER BY k.hits DESC,{order},p.ordinal,p.id LIMIT :window
+            ORDER BY k.hits DESC,semantic.distance NULLS LAST,{order},p.ordinal,p.id LIMIT :window
         """
         clue_words = (
             self._clues_sql()
@@ -412,8 +431,11 @@ class ReferenceService:
             ranked AS (SELECT id,count(*) AS hits FROM matches GROUP BY id)
             SELECT {location},{ref_location}
             FROM ranked k JOIN current_clues a ON a.id=k.id {refs}
+            LEFT JOIN reference_clues c ON c.annotation_id=a.id
+              AND c.fingerprint=a.fingerprint AND c.contract_id=:contract
             WHERE {scope} AND {unread("first.ordinal", "last.ordinal")}
-            ORDER BY k.hits DESC,{ref_order} LIMIT :window
+            ORDER BY k.hits DESC,c.embedding <=> CAST(:vector AS vector) NULLS LAST,
+              {ref_order} LIMIT :window
         """
         )
         return {

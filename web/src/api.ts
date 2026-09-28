@@ -53,7 +53,23 @@ export type Source = Page<{ id: string; ordinal: number; text: string }> & {
   section_id: string;
   actual_range: Omit<Span, 'section_id'> | null;
 };
-export type Resource<T> = { data?: T; loading: boolean; error?: string; retry: () => void };
+export type Resource<T> = {
+  data?: T;
+  loading: boolean;
+  error?: string;
+  errorCode?: string;
+  retry: () => void;
+};
+
+/** 仅保留公开错误码与文案，供页面区分重试和重新搜索。 */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public code?: string,
+  ) {
+    super(message);
+  }
+}
 
 /** 只返回可展示的业务错误，不把请求、响应原文或连接信息写入控制台。 */
 export async function request<T>(
@@ -69,18 +85,22 @@ export async function request<T>(
   });
   if (!response.ok) {
     const error = await response.json().catch(() => null);
-    throw new Error(error?.message || `服务暂时无法读取数据（${response.status}）`);
+    throw new ApiError(error?.message || `服务暂时无法读取数据（${response.status}）`, error?.code);
   }
   return response.json();
 }
 
 /** 每个资源独立取消；请求身份变化立即隐藏旧数据，迟到响应不得覆盖新范围。 */
-export function useResource<T>(path: string | null, body?: object): Resource<T> {
+export function useResource<T>(path: string | null, body?: object, timeoutMs = 20000): Resource<T> {
   const key = JSON.stringify([path, body]);
   const [attempt, setAttempt] = useState(0);
-  const [result, setResult] = useState<{ key: string; data?: T; error?: string; loading: boolean }>(
-    { key: '', loading: true },
-  );
+  const [result, setResult] = useState<{
+    key: string;
+    data?: T;
+    error?: string;
+    errorCode?: string;
+    loading: boolean;
+  }>({ key: '', loading: true });
   useEffect(() => {
     if (!path) return;
     const abort = new AbortController();
@@ -89,7 +109,7 @@ export function useResource<T>(path: string | null, body?: object): Resource<T> 
     const timeout = setTimeout(() => {
       timedOut = true;
       abort.abort();
-    }, 20000);
+    }, timeoutMs);
     setResult({ key, loading: true });
     request<T>(path, body, abort.signal)
       .then((data) => {
@@ -100,6 +120,7 @@ export function useResource<T>(path: string | null, body?: object): Resource<T> 
           setResult({
             key,
             loading: false,
+            errorCode: error instanceof ApiError ? error.code : undefined,
             error: timedOut
               ? '读取超时，请重试。'
               : error instanceof Error
@@ -115,7 +136,7 @@ export function useResource<T>(path: string | null, body?: object): Resource<T> 
     };
     // 身份由完整 URL 与序列化参数决定，避免渲染时创建对象触发重复请求。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, attempt]);
+  }, [key, attempt, timeoutMs]);
   const value = result.key === key ? result : { loading: Boolean(path) };
   return { ...value, retry: () => setAttempt((value) => value + 1) };
 }

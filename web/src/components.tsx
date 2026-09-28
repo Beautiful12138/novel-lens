@@ -18,7 +18,9 @@ export function Status<T>({
     return (
       <div className="error" role="alert">
         <p>{resource.error}</p>
-        <button onClick={resource.retry}>重新读取</button>
+        <button type="button" onClick={resource.retry}>
+          重新读取
+        </button>
       </div>
     );
   return null;
@@ -39,6 +41,7 @@ export function Pager({
   return (
     <div className="pager">
       <button
+        type="button"
         disabled={disabled || paging.page === 0}
         onClick={() => onChange({ ...paging, page: paging.page - 1 })}
       >
@@ -47,7 +50,11 @@ export function Pager({
       <span>
         第 {paging.page + 1} {noun}
       </span>
-      <button disabled={disabled || !next} onClick={() => next && onChange(advance(paging, next))}>
+      <button
+        type="button"
+        disabled={disabled || !next}
+        onClick={() => next && onChange(advance(paging, next))}
+      >
         下一页
       </button>
     </div>

@@ -15,7 +15,13 @@ import { Directory } from './Directory';
 import { Annotations } from './Annotations';
 import { Empty, Pager, Status } from './components';
 
-type ReadingView = Paging & { sectionId: string; range?: Span; scroll: number };
+type ReadingView = Paging & {
+  sectionId: string;
+  range?: Span;
+  before?: number;
+  after?: number;
+  scroll: number;
+};
 type Anchor = { id: string; offset: number };
 
 /** 正文定位使用稳定段落 ID，不以正文字符串、标签名或章节标题作为身份。 */
@@ -86,6 +92,8 @@ function ReaderBody({
           work_id: work.id,
           section_id: view.sectionId,
           ...view.range,
+          ...(view.before ? { before: view.before } : {}),
+          ...(view.after ? { after: view.after } : {}),
           limit: 40,
           ...pageBody(view),
         }
@@ -143,6 +151,23 @@ function ReaderBody({
       setView(returnTo);
       setReturnTo(null);
     }
+  }
+  /** 以当前实际页界继续补读，每批重叠一个段落；不受原引用边界限制。 */
+  function readContext(direction: 'before' | 'after') {
+    const page = source.data;
+    if (!view || !page?.items.length) return;
+    const edge = direction === 'before' ? page.items[0] : page.items.at(-1)!;
+    setPick(null);
+    setFocus(null);
+    setNotes(false);
+    setChapterSelection((value) => value + 1);
+    setView({
+      ...firstPage(),
+      sectionId: view.sectionId,
+      scroll: 0,
+      range: { section_id: view.sectionId, start_paragraph_id: edge.id, end_paragraph_id: edge.id },
+      [direction]: 39,
+    });
   }
   const data = source.data;
   const scope = data?.actual_range ? { section_id: data.section_id, ...data.actual_range } : null;
@@ -210,7 +235,11 @@ function ReaderBody({
             <h2>{section.data?.title || '原文'}</h2>
             <div className="reader-location">
               <span className="hint">
-                {view?.range ? '引用阅读 · 本页' : '章节正文'}
+                {view?.before || view?.after
+                  ? '上下文阅读 · 本页'
+                  : view?.range
+                    ? '引用阅读 · 本页'
+                    : '章节正文'}
                 {pageLabel ? ` · ${pageLabel}` : ''}
               </span>
               {returnTo && <button onClick={restore}>返回阅读位置</button>}
@@ -303,12 +332,34 @@ function ReaderBody({
                 }}
               />
             )}
+            {view?.range && (
+              <div className="context-controls" aria-label="补读上下文">
+                <button
+                  disabled={source.loading || !data?.items.length || data.items[0].ordinal <= 1}
+                  onClick={() => readContext('before')}
+                >
+                  向前补读
+                </button>
+                <button
+                  disabled={
+                    source.loading ||
+                    !data?.items.length ||
+                    !!data.next_cursor ||
+                    !section.data ||
+                    data.items.at(-1)!.ordinal >= section.data.paragraph_count
+                  }
+                  onClick={() => readContext('after')}
+                >
+                  向后补读
+                </button>
+              </div>
+            )}
             <span className="hint">
               {data
                 ? data.next_cursor
                   ? '后面还有正文'
                   : view?.range
-                    ? '已到引用末尾'
+                    ? '已显示当前范围末页，可继续补读上下文'
                     : '已到本章末尾'
                 : '每页最多 40 个完整段落'}
             </span>
