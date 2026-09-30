@@ -12,31 +12,47 @@ from alembic import command
 from alembic.config import Config
 from psycopg import sql
 from pydantic import SecretStr
+from sqlalchemy import create_engine
 from sqlalchemy.engine import make_url
 from starlette.testclient import TestClient
 
 from novel_lens.app import create_app
 from novel_lens.config import Settings
 from novel_lens.database import Database
+from scripts.init_database import initialize
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 @contextmanager
 def temporary_database(raw: str, revision: str = "head") -> Iterator[str]:
-    """创建当次测试库并迁移到指定版本；退出只删除这个随机库。"""
+    """新库直接初始化当前结构；历史迁移测试显式指定版本，退出只删除随机库。"""
     base = make_url(raw)
     name = "novel_lens_test_" + uuid4().hex
     admin_url = base.set(drivername="postgresql", database="postgres")
     test_url = base.set(database=name).render_as_string(hide_password=False)
     with psycopg.connect(admin_url.render_as_string(hide_password=False), autocommit=True) as admin:
+        if revision not in {"head", "empty"}:
+            available = admin.execute(
+                "SELECT EXISTS (SELECT 1 FROM pg_available_extensions WHERE name='vector')"
+            ).fetchone()
+            assert available is not None
+            if not available[0]:
+                pytest.skip("历史迁移验证需要旧版 pgvector 扩展文件；当前安装不需要该扩展")
         admin.execute(sql.SQL("CREATE DATABASE {} ENCODING 'UTF8'").format(sql.Identifier(name)))
         try:
             # 仅在迁移加载配置期间替换环境，退出即恢复；不更改开发者的 .env。
             with pytest.MonkeyPatch.context() as patch:
                 patch.setenv("NOVEL_LENS_DATABASE_URL", test_url)
                 config = Config(str(ROOT / "alembic.ini"))
-                command.upgrade(config, revision)
+                if revision == "head":
+                    engine = create_engine(test_url, hide_parameters=True)
+                    try:
+                        initialize(engine)
+                    finally:
+                        engine.dispose()
+                elif revision != "empty":
+                    command.upgrade(config, revision)
             yield test_url
         finally:
             admin.execute(sql.SQL("DROP DATABASE {} WITH (FORCE)").format(sql.Identifier(name)))

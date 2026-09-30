@@ -23,7 +23,6 @@ def running_server(
     label: str,
     *,
     request_limit: int | None = None,
-    embedding_config: Path | None = None,
     request_timeout: float = 10,
     mcp_profile: Literal["business", "maintenance"] = "maintenance",
 ) -> Iterator[httpx.Client]:
@@ -37,8 +36,6 @@ def running_server(
     env["NOVEL_LENS_MCP_PROFILE"] = mcp_profile
     if request_limit is not None:
         env["NOVEL_LENS_MAX_REQUEST_BYTES"] = str(request_limit)
-    if embedding_config is not None:
-        env["NOVEL_LENS_EMBEDDING_CONFIG"] = str(embedding_config)
     with (
         (directory / f"{label}.stdout").open("wb") as out,
         (directory / f"{label}.stderr").open("wb") as err,

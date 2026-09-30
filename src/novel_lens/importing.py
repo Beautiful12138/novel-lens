@@ -11,7 +11,6 @@ from novel_lens.database import Database
 from novel_lens.errors import ServiceError
 from novel_lens.reading import work_at
 from novel_lens.schema import catalog_requests, paragraphs, parts, sections, sources, works
-from novel_lens.semantic import lock_key
 from novel_lens.source import RULE_VERSION, SourceFailure, parse_canonical, report
 
 
@@ -76,17 +75,11 @@ class ImportService:
         digest = sha256(data).hexdigest()
 
         def action(connection: Connection) -> tuple[UUID, dict[str, object]]:
-            # 同作品的导入先排队，再探测模型锁；普通并发追加不误报模型忙碌。
+            # 同作品导入串行分配分部顺序；业务和回执在同一事务中提交。
             connection.execute(
                 text("SELECT pg_advisory_xact_lock(hashtextextended(:scope, 0))"),
                 {"scope": f"part-import:{work_id}"},
             )
-            # 与索引会话锁和整作品删除采用相同顺序；不等待跨事务的模型计算。
-            for kind in ("fulltext", "annotation"):
-                if not connection.execute(
-                    text("SELECT pg_try_advisory_xact_lock(:key)"), {"key": lock_key(work_id, kind)}
-                ).scalar_one():
-                    raise ServiceError("WORK_BUSY", "作品索引正在创建或构建，请稍后导入", 409)
             work = lock_work(connection, work_id)
             try:
                 parsed = parse_canonical(data)

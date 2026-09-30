@@ -16,13 +16,6 @@ from novel_lens.asset_contracts import (
 from novel_lens.contracts import Page, ReadingFormat, SourceRange
 from novel_lens.errors import ServiceError
 from novel_lens.search_contracts import AnnotationSearchHit, SearchExcerpt, SourceSearchHit
-from novel_lens.semantic_contracts import (
-    AnnotationSemanticCoverage,
-    AnnotationSemanticHit,
-    SemanticCoverage,
-    SemanticKind,
-    SemanticResults,
-)
 
 
 class CompactSourceRange(BaseModel):
@@ -109,31 +102,6 @@ class CompactAnnotationOut(BaseModel):
     tag_ids: list[UUID]
     entity_ids: list[UUID]
     references: list[CompactAnnotationReference]
-
-
-class CompactSemanticHit(BaseModel):
-    part_id: UUID
-    part_name: str
-    section_title: str
-    source_range: CompactSourceRange
-    excerpt: str
-    excerpt_truncated: bool
-    score: float
-
-
-class CompactAnnotationSemanticHit(CompactSemanticHit):
-    annotation_id: UUID
-    annotation_version: int
-    range_ordinal: int
-
-
-class CompactSemanticResults(BaseModel):
-    work_id: UUID
-    kind: SemanticKind
-    coverage: AnnotationSemanticCoverage | SemanticCoverage
-    partial: bool
-    candidate_window_limited: bool
-    items: list[CompactAnnotationSemanticHit | CompactSemanticHit]
 
 
 def bounded_view[T: BaseModel](value: T) -> T:
@@ -246,34 +214,5 @@ def annotation_list_view(
                 )
                 for v in page.items
             ],
-        )
-    )
-
-
-def semantic_search_view(
-    value: SemanticResults, work_id: UUID, kind: SemanticKind, format: ReadingFormat
-) -> SemanticResults | CompactSemanticResults:
-    """省略索引管理字段，保留所有覆盖缺口和原文命中的分数、版本及截断信息。"""
-    if format == "full":
-        return bounded_view(value)
-    items: list[CompactAnnotationSemanticHit | CompactSemanticHit] = []
-    for hit in value.items:
-        payload = hit.model_dump(exclude={"kind", "source_range"}) | {
-            "source_range": compact_range(hit.source_range)
-        }
-        model = (
-            CompactAnnotationSemanticHit
-            if isinstance(hit, AnnotationSemanticHit)
-            else CompactSemanticHit
-        )
-        items.append(model.model_validate(payload))
-    return bounded_view(
-        CompactSemanticResults(
-            work_id=work_id,
-            kind=kind,
-            coverage=value.coverage,
-            partial=value.partial,
-            candidate_window_limited=value.candidate_window_limited,
-            items=items,
         )
     )

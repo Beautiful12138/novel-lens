@@ -5,10 +5,10 @@ from hashlib import sha256
 from uuid import UUID, uuid4
 
 import pytest
+from annotation_fixtures import annotation, references
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 from starlette.testclient import TestClient
-from test_semantic import DeterministicModel
 
 from novel_lens.analysis import AnalysisService
 from novel_lens.asset_contracts import (
@@ -26,8 +26,6 @@ from novel_lens.importing import ImportService
 from novel_lens.reading import ReadingService
 from novel_lens.search import SearchService
 from novel_lens.search_contracts import SearchRequest
-from novel_lens.semantic import SemanticService
-from novel_lens.semantic_contracts import SemanticBuild, SemanticCreate, SemanticGet, SemanticSearch
 
 
 def create_work(database: Database) -> WorkOut:
@@ -172,28 +170,6 @@ def test_concurrent_append_and_failure_rollback(database: Database) -> None:
             )
 
 
-def test_append_invalidates_semantic_source(database: Database) -> None:
-    work = create_work(database)
-    importer = ImportService(database, 10000)
-    first = importer.import_source(source(), uuid4(), work.id)
-    service = SemanticService(database, DeterministicModel())
-    index = service.create(SemanticCreate(work_id=work.id, request_id=uuid4())).index_id
-    for _ in range(10):
-        result = service.build(SemanticBuild(work_id=work.id, index_id=index, request_id=uuid4()))
-        if result.coverage.complete:
-            break
-    assert result.coverage.complete
-    hits = service.search(SemanticSearch(work_id=work.id, part_id=first.part.id, query="风雨"))
-    assert hits.items and all(h.part_id == first.part.id for h in hits.items)
-    importer.import_source(source("续篇"), uuid4(), work.id)
-    status = service.get(SemanticGet(work_id=work.id))
-    assert status.active is not None and status.active.source_stale
-    assert not status.active.coverage.complete
-    with pytest.raises(ServiceError) as stale:
-        service.search(SemanticSearch(work_id=work.id, query="风雨", allow_partial=True))
-    assert stale.value.code == "INDEX_SOURCE_CHANGED"
-
-
 def test_http_new_catalog_and_old_import_removed(client: TestClient) -> None:
     work = client.post("/works", json={"request_id": str(uuid4()), "name": str(uuid4())}).json()[
         "result"
@@ -215,10 +191,8 @@ def test_http_new_catalog_and_old_import_removed(client: TestClient) -> None:
     assert client.get(f"/part-imports/{key}").status_code == 404
 
 
-def test_cross_part_annotation_recall_and_import_index_lock(database: Database) -> None:
-    """一条标注跨部引用；两类搜索筛选的是原文所属部，资产仍属于作品。"""
-    from test_semantic import build
-    from test_semantic_annotations import annotated_index, annotation, references
+def test_cross_part_annotation_keyword_search(database: Database) -> None:
+    """一条标注跨部引用；关键词搜索筛选的是原文所属部，资产仍属于作品。"""
 
     from novel_lens.search_contracts import AnnotationSearchRequest
 
@@ -238,32 +212,3 @@ def test_cross_part_annotation_recall_and_import_index_lock(database: Database) 
         assert hit.first_source_range.section_id in {
             s.id for s in ReadingService(database).list_sections(work.id, 100, None, part.id).items
         }
-    semantic = SemanticService(database, DeterministicModel())
-
-    def finish(identifier: UUID) -> None:
-        # 六处引用超过单批四项上限，按真实分批协议接续构建。
-        for _ in range(10):
-            if build(semantic, work.id, identifier).coverage.complete:
-                return
-        pytest.fail("小型跨部样例未完成构建")
-
-    index = annotated_index(semantic, work.id)
-    finish(index)
-    results = semantic.search(
-        SemanticSearch(work_id=work.id, part_id=second.part.id, kind="annotation", query="风雨")
-    )
-    assert results.items and all(p.part_id == second.part.id for p in results.items)
-    # 构建锁已持有时，导入立即拒绝且不留下分部；释放后相同键可成功。
-    key = uuid4()
-    with semantic._locked(work.id, "annotation"):
-        with pytest.raises(ServiceError) as busy:
-            importer.import_source(source("尾篇"), key, work.id)
-        assert busy.value.code == "WORK_BUSY"
-    importer.import_source(source("尾篇"), key, work.id)
-    with pytest.raises(ServiceError) as stale:
-        semantic.build(SemanticBuild(work_id=work.id, index_id=index, request_id=uuid4()))
-    assert stale.value.code == "INDEX_SOURCE_CHANGED"
-    rebuilt = annotated_index(semantic, work.id)
-    finish(rebuilt)
-    active = semantic.get(SemanticGet(work_id=work.id, kind="annotation")).active
-    assert active is not None and not active.source_stale

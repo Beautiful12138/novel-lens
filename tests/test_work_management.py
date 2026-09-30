@@ -8,9 +8,9 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
-from annotation_fixtures import annotation_fields
+from annotation_fixtures import annotation_fields, references
 from mcp import Client
-from part_fixtures import http_file, http_import
+from part_fixtures import http_file, http_import, imported
 from sqlalchemy import Connection, event, text
 from starlette.testclient import TestClient
 from test_analysis import create as create_job
@@ -18,8 +18,6 @@ from test_assets import create_annotation, create_tag
 from test_entities_relations import entity, relation_request
 from test_live_http import running_server
 from test_mcp_http import call
-from test_semantic import DeterministicModel, build, imported
-from test_semantic_annotations import references
 
 from novel_lens.analysis import AnalysisService
 from novel_lens.asset_contracts import AnnotationCreate, AnnotationOut, CoverageMark
@@ -28,8 +26,6 @@ from novel_lens.database import Database
 from novel_lens.errors import ServiceError
 from novel_lens.reading import ReadingService
 from novel_lens.schema import metadata
-from novel_lens.semantic import SemanticService, lock_key
-from novel_lens.semantic_contracts import SemanticCreate, SemanticSearch
 from novel_lens.work_management import WorkManagementService
 
 
@@ -73,12 +69,6 @@ def test_http_delete_all_assets_and_reimport(database: Database, client: TestCli
             status="read",
         )
     )
-    semantic = SemanticService(database, DeterministicModel())
-    for kind in ("fulltext", "annotation"):
-        index = semantic.create(
-            SemanticCreate.model_validate(dict(work_id=work, kind=kind, request_id=uuid4()))
-        ).index_id
-        assert build(semantic, work, index).coverage.complete
     assert client.delete(f"/works/{work}").status_code == 204
     assert snapshot(database) == before
     assert client.delete(f"/works/{work}").status_code == 204
@@ -94,12 +84,6 @@ def test_visibility_lists_search_and_restore(database: Database, client: TestCli
     work = imported(database, "标题：甲\n可检索原文")
     assets = AssetService(database)
     create_annotation(assets, (work, references(database, work)), note="可检索说明")
-    service = SemanticService(database, DeterministicModel())
-    for kind in ("fulltext", "annotation"):
-        index = service.create(
-            SemanticCreate.model_validate(dict(work_id=work, kind=kind, request_id=uuid4()))
-        ).index_id
-        build(service, work, index)
     reading = ReadingService(database)
     part = reading.list_parts(work, 100, None).items[0]
     original = reading.file(work, part.id)
@@ -122,19 +106,11 @@ def test_visibility_lists_search_and_restore(database: Database, client: TestCli
                 path, json={"work_id": str(work), "terms": ["可检索"], "format": format}
             )
             assert result.status_code == 409 and result.json()["code"] == "WORK_HIDDEN"
-    for kind in ("fulltext", "annotation"):
-        payload = dict(work_id=str(work), kind=kind, query="可检索", allow_partial=True)
-        result = client.post(f"/works/{work}/semantic-search", json=payload)
-        assert result.status_code == 409 and result.json()["code"] == "WORK_HIDDEN"
     assert (
         client.patch(f"/works/{work}/visibility", json={"visibility": "visible"}).status_code == 200
     )
     for path in ("/source/search", "/annotations/search"):
         assert client.post(path, json={"work_id": str(work), "terms": ["可检索"]}).json()["items"]
-    for kind in ("fulltext", "annotation"):
-        assert service.search(
-            SemanticSearch.model_validate(dict(work_id=work, kind=kind, query="可检索"))
-        ).items
     assert reading.file(work, part.id) == original
     assert (
         client.patch(f"/works/{work}/visibility", json={"visibility": "deleted"}).status_code == 422
@@ -178,17 +154,6 @@ def test_delete_failure_rolls_back(database: Database, client: TestClient) -> No
             conn.execute(
                 text("DROP TRIGGER reject_work_delete ON works; DROP FUNCTION reject_work_delete()")
             )
-
-
-@pytest.mark.parametrize("kind", ["fulltext", "annotation"])
-def test_build_lock_rejects_delete(database: Database, client: TestClient, kind: str) -> None:
-    work = imported(database, "标题：甲\n构建中的原文")
-    with database.engine.begin() as conn:
-        conn.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": lock_key(work, kind)})
-        result = client.delete(f"/works/{work}")
-        assert result.status_code == 409 and result.json()["code"] == "WORK_BUSY"
-        assert http_file(client, work).status_code == 200
-    assert client.delete(f"/works/{work}").status_code == 204
 
 
 def test_write_finishes_before_delete_without_orphan_receipt(database: Database) -> None:
@@ -257,12 +222,6 @@ def test_real_http_delete_restart(postgres_url: str, tmp_path: Path) -> None:
                 assert work not in {r["id"] for r in page["items"]}
                 for name in ("source_search", "annotation_search"):
                     await call(mcp, name, {"work_id": work, "terms": ["删除"]}, code="WORK_HIDDEN")
-                await call(
-                    mcp,
-                    "source_semantic_search",
-                    {"work_id": work, "query": "删除"},
-                    code="WORK_HIDDEN",
-                )
 
         asyncio.run(check_mcp())
         assert client.delete(f"/works/{work}").status_code == 204

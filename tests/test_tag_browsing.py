@@ -237,13 +237,6 @@ def test_prepare_finish_without_embedding_and_tag_reuse(database: Database, tmp_
     )
     saved = service.batch(repeated)
     assert AssetService(database).get_tag(tag.id) == tag
-    with database.engine.connect() as conn:
-        assert (
-            conn.scalar(
-                text("SELECT count(*) FROM reference_queue WHERE work_id=:w"), {"w": book.work.id}
-            )
-            == 0
-        )
     finish = PrepareFinish(
         request_id=uuid4(),
         work_id=book.work.id,

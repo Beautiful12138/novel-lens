@@ -8,20 +8,10 @@ from novel_lens.contracts import WorkOut, WorkVisibility
 from novel_lens.database import Database
 from novel_lens.errors import ServiceError
 from novel_lens.schema import works
-from novel_lens.semantic import lock_key
 
 # 子表先于父表。所有标识符均为固定代码，只有作品 UUID 作为绑定参数传入。
 # 新增作品所属表时须同步此清理范围及完整性测试；共享标签不属于作品。
 DELETE_SCOPE = (
-    ("reference_clues", "work_id=:work"),
-    ("semantic_index_heads", "work_id=:work"),
-    (
-        "semantic_build_receipts",
-        "index_id IN (SELECT id FROM semantic_indexes WHERE work_id=:work)",
-    ),
-    ("semantic_index_items", "work_id=:work"),
-    ("semantic_annotation_snapshots", "work_id=:work"),
-    ("semantic_indexes", "work_id=:work"),
     ("analysis_coverage", "job_id IN (SELECT id FROM analysis_jobs WHERE work_id=:work)"),
     ("analysis_targets", "job_id IN (SELECT id FROM analysis_jobs WHERE work_id=:work)"),
     ("analysis_jobs", "work_id=:work"),
@@ -40,7 +30,6 @@ DELETE_SCOPE = (
     ("part_sources", "part_id IN (SELECT id FROM parts WHERE work_id=:work)"),
     ("parts", "work_id=:work"),
     ("catalog_requests", "work_id=:work"),
-    ("reference_queue", "work_id=:work"),
     ("preparation_tags", "work_id=:work"),
     ("works", "id=:work"),
 )
@@ -76,19 +65,12 @@ class WorkManagementService:
         confirm_name: str | None = None,
         remove_preparation_tags: bool = False,
     ) -> None:
-        """先排除跨事务模型构建，再锁作品；失败回滚，已不存在视为目标状态达成。
+        """先锁作品，等待既有业务写入提交；失败回滚，已不存在视为目标状态达成。
 
         资产写入持作品 KEY SHARE 锁直到业务与回执一起提交，故删除看见完整结果。
         不锁全库业务表，不删除共享标签、本地文件或外部备份。
         """
         with self.database.engine.begin() as connection:
-            for kind in ("reference", "fulltext", "annotation"):
-                acquired = connection.execute(
-                    text("SELECT pg_try_advisory_xact_lock(:key)"),
-                    {"key": lock_key(work_id, kind)},
-                ).scalar_one()
-                if not acquired:
-                    raise ServiceError("WORK_BUSY", "作品索引正在创建或构建，请稍后删除", 409)
             row = (
                 connection.execute(
                     select(works.c.id, works.c.name).where(works.c.id == work_id).with_for_update()

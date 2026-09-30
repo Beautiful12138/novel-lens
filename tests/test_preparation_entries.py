@@ -15,7 +15,6 @@ from pydantic import SecretStr
 from starlette.testclient import TestClient
 from test_live_http import running_server
 from test_mcp_http import call
-from test_semantic import DeterministicModel
 
 from novel_lens.app import create_app
 from novel_lens.config import Settings
@@ -96,22 +95,15 @@ def test_preparation_http_mcp_receipt_and_remaining(postgres_url: str, tmp_path:
         asyncio.run(exercise(rest))
 
 
-def test_lifespan_prepares_and_restarts_without_model_calls(
+def test_lifespan_prepares_and_restarts(
     postgres_url: str,
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """模型替身只验证调度和事务，不作为真实 embedding 或文学效果证据。"""
-    import novel_lens.app as app_module
-
-    model = DeterministicModel()
-    monkeypatch.setattr(app_module, "EmbeddingClient", lambda path: model)
+    """准备完成后重启仍能读取持久状态和原文，不创建后台任务。"""
     source = tmp_path / "准备样例.txt"
     source.write_text("分部：卷一\n标题：雨夜\n雨声盖过了脚步声。", encoding="utf-8")
     with temporary_database(postgres_url) as isolated:
-        settings = Settings.model_construct(
-            database_url=SecretStr(isolated), embedding_config=tmp_path / "fake.toml"
-        )
+        settings = Settings.model_construct(database_url=SecretStr(isolated))
         with TestClient(create_app(settings)) as client:
             imported = client.post(
                 "/preparation/import",
@@ -147,9 +139,7 @@ def test_lifespan_prepares_and_restarts_without_model_calls(
                 ),
             )
             assert finished.status_code == 200, finished.text
-        # 重启服务读取持久状态，不重复计算已同步的向量，不创建 AI 任务。
-        assert model.calls == []
+        # 重启服务读取已提交的准备结果。
         with TestClient(create_app(settings)) as restarted:
             state = restarted.post("/preparation/status", json=status_request).json()
             assert state["work_ready"] and state["job"]["status"] == "completed"
-        assert model.calls == []

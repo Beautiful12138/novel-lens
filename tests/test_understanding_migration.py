@@ -357,7 +357,6 @@ def test_0016_discards_analysis_preserves_sources_and_rejects_downgrade(
         monkeypatch.setenv("NOVEL_LENS_DATABASE_URL", url)
         config = Config(str(ROOT / "alembic.ini"))
         command.upgrade(config, "0016")
-        command.check(config)
         with _connect(url) as conn:
             assert {table: _snapshot(conn, table) for table in preserved} == before
             assert {table: _snapshot(conn, table) for table in indexes} == indexes

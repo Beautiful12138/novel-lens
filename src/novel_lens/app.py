@@ -2,7 +2,7 @@
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Annotated, Literal
+from typing import Annotated
 from uuid import UUID
 
 from fastapi import FastAPI, Query, Request, Response
@@ -49,7 +49,6 @@ from novel_lens.contracts import (
     WorkVisibilityUpdate,
 )
 from novel_lens.database import Database
-from novel_lens.embedding import EmbeddingClient
 from novel_lens.errors import ServiceError
 from novel_lens.errors import database_error as public_database_error
 from novel_lens.http import RequestSizeLimit, upload, upload_schema
@@ -60,10 +59,8 @@ from novel_lens.mcp_api import create_mcp
 from novel_lens.preparation import PreparationService
 from novel_lens.query_views import (
     CompactAnnotationResults,
-    CompactSemanticResults,
     CompactSourceResults,
     annotation_search_view,
-    semantic_search_view,
     source_search_view,
 )
 from novel_lens.reading import ReadingService
@@ -90,16 +87,6 @@ from novel_lens.search_contracts import (
     SearchRequest,
     SourceSearchHit,
 )
-from novel_lens.semantic import SemanticService
-from novel_lens.semantic_contracts import (
-    SemanticBuild,
-    SemanticCreate,
-    SemanticGet,
-    SemanticResults,
-    SemanticSearch,
-    SemanticStatus,
-    SemanticWrite,
-)
 from novel_lens.web import mount_webui
 from novel_lens.work_management import WorkManagementService
 
@@ -116,11 +103,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     management = WorkManagementService(database)
     assets = AssetService(database)
     search = SearchService(database)
-    model = EmbeddingClient(settings.embedding_config)
-    semantic = SemanticService(database, model)
     preparation = PreparationService(database, settings.max_file_bytes)
     library = LibraryService(database)
-    mcp = create_mcp(settings, importing, reading, assets, semantic)
+    mcp = create_mcp(settings, importing, reading, assets)
     # 只允许当前监听端口；不沿用 SDK 默认允许任意本机端口的通配配置。
     names = {settings.host, "localhost"}
     if settings.host == "localhost":
@@ -335,45 +320,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         request: AnnotationSearchRequest,
     ) -> Page[AnnotationSearchHit] | CompactAnnotationResults:
         return annotation_search_view(search.annotations(request), request.work_id, request.format)
-
-    @app.post("/works/{work_id}/semantic-indexes", summary="显式创建指定层原文语义索引代")
-    def semantic_create(work_id: UUID, request: SemanticCreate) -> SemanticWrite:
-        if work_id != request.work_id:
-            raise ServiceError("INVALID_INPUT", "路径与请求中的作品 ID 不一致")
-        return semantic.create(request)
-
-    @app.post("/works/{work_id}/semantic-indexes/{index_id}/build", summary="构建有限索引批次")
-    def semantic_build(work_id: UUID, index_id: UUID, request: SemanticBuild) -> SemanticWrite:
-        if work_id != request.work_id or index_id != request.index_id:
-            raise ServiceError("INVALID_INPUT", "路径与请求中的作品或索引 ID 不一致")
-        return semantic.build(request)
-
-    @app.get("/works/{work_id}/semantic-indexes/status", summary="发现索引代与分页读取缺口")
-    def semantic_get(
-        work_id: UUID,
-        kind: Literal["fulltext", "annotation"] = "fulltext",
-        index_id: UUID | None = None,
-        limit: Annotated[int, Query(ge=1, le=100)] = 100,
-        cursor: Annotated[str | None, Query(max_length=2048)] = None,
-    ) -> SemanticStatus:
-        return semantic.get(
-            SemanticGet(
-                work_id=work_id,
-                kind=kind,
-                index_id=index_id,
-                limit=limit,
-                cursor=cursor,
-            )
-        )
-
-    @app.post("/works/{work_id}/semantic-search", summary="在指定作品内查询原文语义候选")
-    def semantic_search(
-        work_id: UUID,
-        request: SemanticSearch,
-    ) -> SemanticResults | CompactSemanticResults:
-        if work_id != request.work_id:
-            raise ServiceError("INVALID_INPUT", "路径与请求中的作品 ID 不一致")
-        return semantic_search_view(semantic.search(request), work_id, request.kind, request.format)
 
     @app.get("/works/{work_id}/sections/{section_id}", summary="读取指定章节及分部名称")
     def get_section(work_id: UUID, section_id: UUID) -> SectionOut:

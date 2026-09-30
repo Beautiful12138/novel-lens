@@ -1,4 +1,4 @@
-"""真实数据库验证纠错状态、共享标签修订、并发、批次回滚及语义排除。"""
+"""真实数据库验证纠错状态、共享标签修订、并发、批次回滚及撤回恢复。"""
 
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
@@ -8,8 +8,6 @@ import pytest
 from test_analysis import create, key, mutate, recovery
 from test_assets import create_annotation, create_tag
 from test_assets import source as source
-from test_semantic import DeterministicModel, build, new_index
-from test_semantic_annotations import annotated_index
 
 from novel_lens.analysis import AnalysisService
 from novel_lens.asset_contracts import (
@@ -30,9 +28,7 @@ from novel_lens.contracts import SourceRange
 from novel_lens.database import Database
 from novel_lens.errors import ServiceError
 from novel_lens.search import SearchService
-from novel_lens.search_contracts import AnnotationSearchRequest, SearchRequest
-from novel_lens.semantic import SemanticService
-from novel_lens.semantic_contracts import SemanticBuild, SemanticGet, SemanticSearch
+from novel_lens.search_contracts import AnnotationSearchRequest
 
 
 def status_request(a: AnnotationOut, *, active: bool = False) -> AnnotationSetStatus:
@@ -248,51 +244,3 @@ def test_correction_checkpoint_rollback_and_content_status_race(
     with ThreadPoolExecutor(2) as pool:
         assert sorted(pool.map(race, ["edit", "restore"])) == ["VERSION_CONFLICT", "ok"]
     assert assets.get_annotation(AnnotationGet(work_id=a.work_id, annotation_id=a.id)).version == 3
-
-
-def test_retraction_semantic_reuse_gaps_and_inference(
-    database: Database,
-    source: tuple[UUID, list[SourceRange]],
-) -> None:
-    assets = AssetService(database)
-    a = create_annotation(assets, source, note="首段")
-    model = DeterministicModel()
-    semantic = SemanticService(database, model)
-    index = annotated_index(semantic, source[0])
-    assert build(semantic, source[0], index).coverage.complete
-    full = new_index(semantic, source[0])
-    assert build(semantic, source[0], full).coverage.complete
-    request = SemanticSearch(work_id=source[0], kind="annotation", query="首段")
-    assert semantic.search(request).items
-    revoked = assets.set_annotation_status(status_request(a)).result
-    assert isinstance(revoked, AnnotationOut)
-    assert not semantic.search(request).items
-    assert semantic.search(SemanticSearch(work_id=source[0], query="首段")).items
-    assert SearchService(database).source(SearchRequest(work_id=source[0], terms=["首段"])).items
-    status = semantic.get(SemanticGet(work_id=source[0], kind="annotation"))
-    assert status.active and status.active.coverage.total == 0 and status.active.coverage.complete
-    calls = len(model.calls)
-    active = assets.set_annotation_status(status_request(revoked, active=True)).result
-    assert isinstance(active, AnnotationOut)
-    assert len(model.calls) == calls
-    assert semantic.search(request).items
-    # 新代只捕获有效标注；撤回时创建的空代不假装包含恢复后的证据。
-    revoked = assets.set_annotation_status(status_request(active)).result
-    assert isinstance(revoked, AnnotationOut)
-    empty = annotated_index(semantic, source[0])
-    assert build(semantic, source[0], empty).coverage.complete
-    active = assets.set_annotation_status(status_request(revoked, active=True)).result
-    assert isinstance(active, AnnotationOut)
-    state = semantic.get(SemanticGet(work_id=source[0], kind="annotation"))
-    assert state.active and not state.active.coverage.complete
-    with pytest.raises(ServiceError) as err:
-        semantic.search(request)
-    assert err.value.code == "INDEX_INCOMPLETE"
-    target = annotated_index(semantic, source[0])
-
-    def withdraw_during_embed() -> None:
-        assets.set_annotation_status(status_request(active))
-
-    model.during_embed = withdraw_during_embed
-    result = semantic.build(SemanticBuild(work_id=source[0], index_id=target, request_id=uuid4()))
-    assert result.batch_discarded and result.batch_ready == 0

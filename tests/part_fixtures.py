@@ -7,6 +7,7 @@ from mcp import Client
 
 from novel_lens.catalog import CatalogService
 from novel_lens.contracts import ImportOut, WorkCreate
+from novel_lens.database import Database
 from novel_lens.importing import ImportService
 from novel_lens.source import parse_canonical
 
@@ -61,3 +62,9 @@ def http_file(client: Any, work_id: Any) -> Any:
         return listing
     part_id = listing.json()["items"][0]["id"]
     return client.get(f"/works/{work_id}/parts/{part_id}/file")
+
+
+def imported(database: Database, body: str) -> UUID:
+    """导入测试专用正文并返回作品身份。"""
+    data = f"分部：{uuid4()}\n{body}".encode()
+    return import_work(ImportService(database, 64 * 1024 * 1024), data, uuid4()).work.id
