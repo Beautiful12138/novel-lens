@@ -34,7 +34,7 @@ def running_server(
         port = listener.getsockname()[1]
     env = {key: value for key, value in os.environ.items() if not key.startswith("NOVEL_LENS_")}
     env.update(NOVEL_LENS_DATABASE_URL=url, NOVEL_LENS_PORT=str(port))
-    # 既有维护接口用例显式选择维护配置；业务工具另行验证默认八项入口。
+    # 既有维护接口用例显式选择维护配置；业务工具另行验证默认 15 项入口。
     env["NOVEL_LENS_MCP_PROFILE"] = mcp_profile
     if access_key is not None:
         env["NOVEL_LENS_ACCESS_KEY"] = access_key
