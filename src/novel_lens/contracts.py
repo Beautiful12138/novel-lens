@@ -143,6 +143,18 @@ class SourceRange(RequestModel):
     end_paragraph_id: UUID
 
 
+class OrdinalRange(RequestModel):
+    """不可变原文中的一基含两端段号；转换为 UUID 后才参与存储。"""
+
+    work_id: UUID
+    section_id: UUID
+    start_ordinal: int = Field(ge=1)
+    end_ordinal: int = Field(ge=1)
+
+
+RangeInput = SourceRange | OrdinalRange
+
+
 class ReadRequest(RequestModel):
     source_range: SourceRange
     limit: Limit = 100

@@ -7,6 +7,7 @@ export default defineConfig({
   build: { outDir: '../src/novel_lens/webui', emptyOutDir: true },
   server: {
     proxy: {
+      '/auth': 'http://127.0.0.1:8000',
       '/assets': 'http://127.0.0.1:8000',
       '/library': 'http://127.0.0.1:8000',
       '/source': 'http://127.0.0.1:8000',

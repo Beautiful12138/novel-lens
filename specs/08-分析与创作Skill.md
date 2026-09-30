@@ -4,9 +4,9 @@
 
 ## 1. 范围与交付
 
-在 `.agents/skills/` 维护 novel-analysis 与 chinese-novel-writing。每份完整文件夹可独立交付，不依赖开发仓库、另一份 Skill 或历史会话。frontmatter 根据“提供待分析 TXT”和“提出创作要求”自动发现，不要求用户记住 Skill 或工具名称。宿主仍须已连接 NovelLens。
+在 `.agents/skills/` 维护 novel-analysis 与 chinese-novel-writing。每份完整文件夹可独立交付，不依赖开发仓库、另一份 Skill 或历史会话。frontmatter 根据“提供待分析 TXT”和“提出创作要求”自动发现，不要求用户记住 Skill 或工具名称。宿主仍须已连接 NovelLens MCP，或能访问对应 HTTP 服务；HTTP 对等接口和详细操作契约见 Spec 20。
 
-写作原则只随 chinese-novel-writing 携带一份；由 scripts/sync_skill_references.py 从 docs/中文小说正文写作原则.md 同步。入口、包内写法方法与 MCP 流程人工维护，运行 Skill 不需要脚本或 Python。完整分析指南保留维护参考，其适用方法提炼到分析包内必读方法，少量短例按实际疑问选读，不加载固定维度清单。
+写作原则只随 chinese-novel-writing 携带一份；由 scripts/sync_skill_references.py 从 docs/中文小说正文写作原则.md 同步。两份包内的 HTTP 指南由同一脚本从 docs/AI-HTTP使用指南.md 同步，分别可独立使用；入口、包内写法方法与业务流程人工维护，运行 Skill 不需要脚本或 Python。完整分析指南保留维护参考，其适用方法提炼到分析包内必读方法，少量短例按实际疑问选读，不加载固定维度清单。
 
 ## 2. novel-analysis
 

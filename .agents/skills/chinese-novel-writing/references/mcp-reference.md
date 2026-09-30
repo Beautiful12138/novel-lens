@@ -1,6 +1,6 @@
 # 创作前的原文参考
 
-使用宿主实际发现的 NovelLens 工具与 schema，工具前缀由宿主决定。参考默认只读，通过 `library_browse` 浏览分类、标签和标注，再用 `source_read` 阅读原文；不新建准备任务、修改共享标签或改变分析进度。目录与原文默认 compact，full 用于完整对象或详细位置检查。
+使用宿主实际发现的 NovelLens 工具与 schema，工具前缀由宿主决定。仅能调用 HTTP 时另读 [HTTP 调用指南](http-api.md)，工具名对应同名 operationId。参考默认只读，通过 `library_browse` 浏览分类、标签和标注，再用 `source_read` 阅读原文；不新建准备任务、修改共享标签或改变分析进度。目录与原文默认 compact，full 用于完整对象或详细位置检查。
 
 ## 范围与目录
 
@@ -41,10 +41,10 @@
 
 `source_read` 输入 work_id、section_id，可选 start_paragraph_id 与 end_paragraph_id（须成对），以及 before、after、limit、cursor、format（默认 compact）。
 
-- 无端点时整章分页读取；有端点时按范围读取，before/after 各可扩展 0–100 段。
+- 无端点时整章分页读取；有端点时按范围读取，也可用 start_ordinal/end_ordinal（同章从 1 开始、含两端）代替 UUID 端点，两种方式互斥；before/after 各可扩展 0–100 段。
 - 默认一页 60 段，最多 200 段，是响应预算，不是充分理解的标准。
 - 响应每个自然段保留 id、ordinal、text，顶层包含 work_id/section_id；本页 actual_range 的端点与顶层归属组成完整已读坐标。
-- next_cursor 非空时，保持原端点、扩展参数和章节续读。requested_range 不是本页已读证明；候选预览和分析进度也不是本次已读。
+- next_request 非空时整体作为下一次 source_read 的输入；也可手工保持原端点、扩展参数和章节并传入 next_cursor。requested_range 不是本页已读证明；候选预览和分析进度也不是本次已读。
 - 标注 compact 详情的 references 每项提供完整 read_target，可直接作为 source_read 参数；evidence_range 是精确证据，不是默认阅读边界。full 详情使用 references.reading_range。每处 role_note 解释其在观察中的用途，阅读目标不需要自行拼 UUID。
 - 引用是阅读入口，不是默认阅读边界；场景或理解所需联系跨章时，通过目录读取有关章节。阅读范围依据实际表达与任务需要决定，不固定段数或调用次数。
 
@@ -65,3 +65,5 @@
 示例只演示参数，不是阅读配额。沿实际句行辨认内容选择、表达承接及必要条件；当前上下文已有正文可以复用，只有旧总结时按坐标回读。读到材料与用好材料分别判断，不能以调用成功、标签命中或阅读数量证明成稿有效。
 
 最终在新作自身的人物、处境与语言中重新创造，不逐句替换原作人名或物件，不把同一结构位置当作同等因果作用。默认交付正文，不附工具清单、自评或冗长读书报告；用户要求时说明实际参考范围。
+
+标注列表可用 query 对 title、scope_note、note 作字面查询；source_range 反查任一证据范围相交（含端点），不按阅读范围匹配。已知多个标注 ID 时用 annotation_get_many({work_id,annotation_ids}) 一次读取最多 50 条完整详情、版本和引用段号；这些只读入口不推进分析任务。

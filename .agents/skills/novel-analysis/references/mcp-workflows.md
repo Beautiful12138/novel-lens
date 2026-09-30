@@ -1,6 +1,6 @@
-# 资料准备的 MCP 流程
+# 资料准备流程
 
-本文件适用于提供分类、标签与标注浏览的 NovelLens。使用宿主实际发现的工具名及 schema；前缀由宿主决定，不硬编码。服务负责数据与阅读入口，AI 负责文件准备、阅读与文学判断。
+本文件适用于提供分类、标签与标注浏览的 NovelLens。使用宿主实际发现的工具名及 schema；前缀由宿主决定，不硬编码。服务负责数据与阅读入口，AI 负责文件准备、阅读与文学判断。仅能调用 HTTP 时另读 [HTTP 调用指南](http-api.md)，下述工具名对应同名 operationId，业务流程不变。
 
 ## 入口与文件
 
@@ -9,8 +9,8 @@
 查旧的最短路径：
 
 1. 标签未知时用 `library_browse({view:"tags",query:"要查的名称或别名",namespace?:"分组"})` 查全库共享词表，包括尚未使用的标签；省略 query 浏览词表。query 是名称、定义及别名的字面子串查询，不是语义召回。指定 work_id/work_ids 时只返回范围内有效标注实际使用的标签，不适合作为确认全库没有同义标签的依据。
-2. 用 `library_browse({view:"annotations",work_id,tag_ids:[查到的标签ID],status:"active"})` 找本作品旧观察；多个 ID 默认任一命中并去重，需要交集时传 `tag_match:"all"`。也可按 source_range 找任一引用与范围相交的标注，或省略标签直接浏览。part_id、section_id、source_range 要求单作品范围。可用 kind="observation" 或 "comparison" 筛选用途，省略查询两种；筛选随游标保持不变。默认 active，确需核对旧记录时显式使用 withdrawn 或 null（全部状态）。
-3. 用 `library_browse({view:"annotations",work_id,annotation_id,format:"full"})` 读取完整说明、全部引用、版本和 tags 定义；详情不混入 work_ids 或其他列表筛选。已有明确 ID 时直接执行本步，列表摘要不能作为完整修订对象。
+2. 用 `library_browse({view:"annotations",work_id,tag_ids:[查到的标签ID],status:"active"})` 找本作品旧观察；多个 ID 默认任一命中并去重，需要交集时传 `tag_match:"all"`。可用 query 对 title、scope_note、note 作字面查询；也可按 source_range 找任一 evidence_range 与范围相交（包含端点）的标注，或省略标签直接浏览。part_id、section_id、source_range 要求单作品范围。可用 kind="observation" 或 "comparison" 筛选用途，省略查询两种；筛选随游标保持不变。默认 active，确需核对旧记录时显式使用 withdrawn 或 null（全部状态）。
+3. 用 `library_browse({view:"annotations",work_id,annotation_id,format:"full"})` 读取完整说明、全部引用、版本和 tags 定义；详情不混入 work_ids 或其他列表筛选。已有明确 ID 时直接执行本步；多个 ID 用 annotation_get_many({work_id,annotation_ids}) 一次取得最多 50 条完整详情及引用段号，保持输入顺序。列表摘要不能作为完整修订对象。
 
 标签可用 category 筛选，`category:"unclassified"` 只取空分类，省略表示全部。categories 视图不分页，只展示当前范围有效标注实际使用的分类与未分类计数；标签的 annotation_count 也仅统计当前范围有效标注，不包含屏蔽作品，不是原文频率或质量评分。查同义称呼先核对定义和上下文，相同人物或标签不能作为合并观察的依据；旧说明涉及本次判断时回读其原文。
 
@@ -47,13 +47,13 @@ prepare_batch 的新标签可带 categories 和 aliases；精确复用已有 nam
 
 `source_read({work_id, section_id, start_paragraph_id?, end_paragraph_id?, before?, after?, limit?, cursor?})`：
 
-- 不提供端点时读取整章；提供时必须同时提供起止 ID。
+- 不提供端点时读取整章；提供时必须同时提供起止 ID，也可改传 start_ordinal/end_ordinal（同章从 1 开始，包含两端），两种寻址互斥。section_id 始终为目录返回的 UUID。
 - `before`、`after` 各可扩展 0–100 段，不跨章；需要时查目录读取相邻章节。
 - 默认一页 60 段，最多 200 段，这是技术分页上限，不是文学阅读配额。
 - `items` 保留每个完整自然段的 `id`、`ordinal`、`text`；顶层给出作品与章节。`actual_range` 是本页实际范围；`requested_range`（范围读取时）不是已读证明。
-- 续页保持相同章节、端点和扩展参数，传入 `next_cursor`。SourceRange 须合并顶层的 work_id、section_id 与实际范围的 start_paragraph_id、end_paragraph_id，不编造坐标。
+- 非空 next_request 可整体作为下一次 source_read 输入，保留范围及扩展参数；null 表示无后续页。手工传 cursor 时仍须保持全部原定位参数。SourceRange 须合并顶层的 work_id、section_id 与实际范围的 start_paragraph_id、end_paragraph_id，不编造坐标。
 
-`prepare_batch` 输入：`request_id`、`work_id`、`job_id`、任务的 `expected_version`、本批实际处理的 `source_range`、`marks`、`recovery`、`outcome_note`。source_range 为一章内含两端的连续范围。
+`prepare_batch` 输入：`request_id`、`work_id`、`job_id`、任务的 `expected_job_version`、本批实际处理的 `source_range`、`marks`、`recovery`、`outcome_note`。source_range 为一章内含两端的连续范围。
 
 每条 marks 输入：
 
@@ -72,7 +72,7 @@ prepare_batch 的新标签可带 categories 和 aliases；精确复用已有 nam
 }
 ```
 
-上述占位 UUID 必须替换为真实返回值。kind、title、scope_note、note、references 必填，tags 可为空。title 最长 256 字符，说明不能空白；references 为 1–100 处，重复证据范围拒绝。reading_range 可省略并等于 evidence_range；显式提供时须与证据同作品、同章并包含证据。正文跨章时分列真实引用，不能伪造跨章范围。标签按 namespace/name 精确复用，不覆盖已有共享定义、别名或分类；同义词是否同一概念仍由 AI 判断。修订还须提供 `annotation_id` 及标记自己的 `expected_version`，完整提交 kind、title、scope_note、note、references 和标签；撤回时 `status="withdrawn"`。不要为修改一个局部观察去全局重定义标签。
+上述占位 UUID 必须替换为真实返回值。kind、title、scope_note、note、references 必填，tags 可为空。title 最长 256 字符，说明不能空白；references 为 1–100 处，重复证据范围拒绝。reading_range 可省略并等于 evidence_range；显式提供时须与证据同作品、同章并包含证据。正文跨章时分列真实引用，不能伪造跨章范围。标签按 namespace/name 精确复用，不覆盖已有共享定义、别名或分类；同义词是否同一概念仍由 AI 判断。修订还须提供 `annotation_id` 及标记自己的 `expected_annotation_version`，完整提交 kind、title、scope_note、note、references 和标签；撤回时 `status="withdrawn"`。不要为修改一个局部观察去全局重定义标签。
 
 任务已 completed 时，先取得当前任务和标记详情，修订批次另传非空 `reopen_reason` 并包含至少一条标记。服务将重开、标记修订和进度保存为一次原子操作，保留已有覆盖、清除旧完成说明；失败仍为原完成状态。后续运行中批次不传 reopen_reason；修订完成且必要保存核验完成后调用 prepare_finish。原因由 AI 根据修订请求填写，不增加普通步骤的用户确认。
 
@@ -83,6 +83,18 @@ next_action 记录具体未完成操作，例如“回读所列范围并补充 a
 批次的 source_range 是本次实际处理范围；每条 marks 的 references 保存该观察的全部证据及各自阅读范围，可包括同作品其他章节，两者都必须提供真实坐标。补充旧观察时，在当前完整 references 基础上保留有效旧引用并加入新引用，去除完全重复范围，不拼接不连续原文。说明交代各处证据对观察的作用；需要跨段理解时保留必要上下文，不把分散引文凑成完整的假场景，也不以大范围代替具体联系。新旧标记可以在一个 prepare_batch 原子提交；回执成功才表示补充已落库。
 
 全部成果、进度和回执同一事务提交。本批任一校验失败整批回滚，保留之前成功批次。成功回执给出新的任务版本；继续处理下一范围。
+
+## 局部修订、预检与追溯
+
+prepare_batch 中的 source_range、引用的 evidence_range/reading_range 可使用 work_id + section_id + start_ordinal/end_ordinal；仍须是同章真实范围，服务存储与返回 UUID。recovery 中坐标仍使用完整 UUID，可复用原文响应。
+
+只改说明可提交 `{"operation":"patch","annotation_id":"实际UUID","expected_annotation_version":6,"note":"修订后的完整说明"}`；未提供字段保留，不接受显式 null。引用可用 add_references 增加和 remove_references 按完整 evidence_range 精确删除，或用 references 整体替换，二者互斥。最终至少一处引用；tags 省略保留、[] 清空。整条撤回使用同样 patch 和 status="withdrawn"，恢复用 active。旧 expected_version 输入兼容，但同一对象不可同时提供新旧名；批次任务版本和标注版本不能混用。
+
+需要核验时，将完整批次原输入交给 prepare_validate。返回 valid、issues 和路径，校验失败按条目修正；不创建资产、占用请求键或改变进度。already_committed=true 表示同键同输入已有回执。正式提交仍在事务内重新检查，预检不能证明文学判断或保证并发后提交成功。不同标注可引用同一区间，服务不判文学重复。
+
+中断前可用 prepare_read({request_id,work_id,job_id,expected_job_version,source_range,recovery}) 显式保存已读但未处理范围和接续信息；它不创建标注，不把 processed 降级，read 也不能当作完成。原文读取本身不自动写进度。
+
+annotation_history({work_id,annotation_id,version?}) 查询可取得版本或指定快照；history_complete=false 表示有缺失，不猜测旧内容。annotation_diff({work_id,annotation_id,from_version,to_version}) 比较两版实际快照。prepare_batches({work_id,job_id,limit?,cursor?}) 分页查看已提交分析批次和任务版本变化。annotation_export({work_id,job_id?,limit?,cursor?}) 分页导出完整当前标注及引用段号；job_id 指该任务批次曾写过的标注，不按引用归属推断。导出期间快照失效须整轮重试，不混合页。分页保持原筛选。
 
 ## 保存与接续作品认识
 
@@ -100,7 +112,7 @@ title 说明比较问题，scope_note 说明实际已读作品范围、场合及
 
 来源疑点沿用现有字段：已核对的现象和位置放在 recovery.facts，原因未定或缺少版本对照放在 open_questions；需要修订的资产 ID、证据坐标及下一步放在 next_action。对后续原文理解有必要长期保留的问题，可保存带真实引用的简短标注，说明已知现象与不确定性，不用标签名代替证据，也不为每个猜测新建错误标签。
 
-修订用 `library_browse({view:"annotations",work_id,annotation_id,format:"full"})` 取得当前完整对象，再通过 source_read 核对相应原文。按最新标记版本使用 prepare_batch 完整替换用途、标题、适用范围、说明、标签和引用；只保留仍有依据的旧引用，不为了保留原分析而继续提交错误证据。整条失效用 status="withdrawn"，已完成任务沿用 reopen_reason。没有当前批次阅读证据时先回读，不伪造 source_range 或阅读进度。
+修订用 `library_browse({view:"annotations",work_id,annotation_id,format:"full"})` 取得当前完整对象，再通过 source_read 核对相应原文。按最新标记版本使用 prepare_batch 的 operation=patch 修改必要字段，或完整替换用途、标题、适用范围、说明、标签和引用；只保留仍有依据的旧引用，不为了保留原分析而继续提交错误证据。整条失效用 status="withdrawn"，已完成任务沿用 reopen_reason。没有当前批次阅读证据时先回读，不伪造 source_range 或阅读进度。
 
 保存后再次通过同一详情入口核对当前版本和状态，以及说明、引用、标签是否表达同一结论。列表摘要和历史回执不能代替这一核验。仅替换标签或追加警告而保留已否定的分析，不算完成纠错；失败或核验不一致时保留具体待办，按当前版本修正，不盲目重放旧修订。
 

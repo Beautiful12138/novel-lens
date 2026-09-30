@@ -14,7 +14,14 @@ from novel_lens.asset_contracts import (
     JobStatus,
     TagIdentity,
 )
-from novel_lens.contracts import Page, ParagraphOut, ParagraphSpan, SourceRange
+from novel_lens.contracts import (
+    CompactParagraphPage,
+    CompactReadOut,
+    Page,
+    ParagraphOut,
+    ParagraphSpan,
+    SourceRange,
+)
 from novel_lens.query_views import CompactAnnotationOut
 from novel_lens.tag_categories import Categories
 
@@ -103,6 +110,7 @@ class FullSourcePage(Page[ParagraphOut]):
     section_id: UUID
     actual_range: ParagraphSpan | None
     requested_range: ParagraphSpan | None = None
+    next_request: dict[str, Any] | None = None
 
     @model_serializer(mode="wrap")
     def optional_request(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
@@ -110,3 +118,13 @@ class FullSourcePage(Page[ParagraphOut]):
         if self.requested_range is None:
             result.pop("requested_range", None)
         return result
+
+
+class ContinuedParagraphPage(CompactParagraphPage):
+    """下一页参数可原样交给 source_read；最后一页为 null。"""
+
+    next_request: dict[str, Any] | None
+
+
+class ContinuedReadOut(CompactReadOut):
+    next_request: dict[str, Any] | None

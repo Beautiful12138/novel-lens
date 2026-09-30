@@ -1028,10 +1028,12 @@ class AssetService:
     def browse_annotation_detail(self, request: AnnotationGet) -> BrowsedAnnotationDetail:
         """批量解析引用的分部、章节和段号，避免前端逐处猜测或下载整段正文。"""
         with (
-            self.database.engine.connect().execution_options(
+            nullcontext(self.connection)
+            if self.connection is not None
+            else self.database.engine.connect().execution_options(
                 isolation_level="REPEATABLE READ"
             ) as connection,
-            connection.begin(),
+            nullcontext() if self.connection is not None else connection.begin(),
         ):
             searchable_work(connection, request.work_id)
             row = scoped_row(

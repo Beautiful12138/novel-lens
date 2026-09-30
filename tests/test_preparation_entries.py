@@ -29,6 +29,13 @@ def test_preparation_http_mcp_receipt_and_remaining(postgres_url: str, tmp_path:
         async with Client(str(rest.base_url).rstrip("/") + "/mcp") as mcp:
             names = {tool.name for tool in (await mcp.list_tools()).tools}
             assert names == {
+                "annotation_get_many",
+                "annotation_history",
+                "annotation_diff",
+                "annotation_export",
+                "prepare_batches",
+                "prepare_validate",
+                "prepare_read",
                 "library_browse",
                 "prepare_import",
                 "prepare_status",

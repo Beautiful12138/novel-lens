@@ -1,9 +1,17 @@
 """读取当前工作目录配置，并生成不包含原始输入值的错误信息。"""
 
 from ipaddress import ip_address
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Self
+from urllib.parse import urlsplit
 
-from pydantic import Field, SecretStr, StringConstraints, ValidationError, field_validator
+from pydantic import (
+    Field,
+    SecretStr,
+    StringConstraints,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError
@@ -28,9 +36,52 @@ class Settings(BaseSettings):
     port: int = Field(default=8000, ge=1, le=65535)
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     database_url: SecretStr | None = None
+    access_key: SecretStr | None = None
+    public_origin: str | None = None
     mcp_profile: Literal["business", "maintenance"] = "business"
     max_file_bytes: int = Field(default=64 * 1024 * 1024, ge=1)
     max_request_bytes: int = Field(default=65 * 1024 * 1024, ge=1)
+
+    @field_validator("access_key")
+    @classmethod
+    def validate_access_key(cls, value: SecretStr | None) -> SecretStr | None:
+        """密钥保持原值；显式空白配置不能意外关闭鉴权。"""
+        if value is not None:
+            raw = value.get_secret_value()
+            if not raw.strip() or len(raw) > 512 or any(ord(c) < 33 or ord(c) > 126 for c in raw):
+                raise ValueError("访问密钥须为 1–512 个可见 ASCII 字符")
+        return value
+
+    @field_validator("public_origin")
+    @classmethod
+    def validate_public_origin(cls, value: str | None) -> str | None:
+        """公开入口只接受 HTTPS origin，避免把凭据、路径或任意来源引入信任列表。"""
+        if value is None:
+            return None
+        try:
+            parsed = urlsplit(value)
+            _ = parsed.port
+            if (
+                parsed.scheme != "https"
+                or not parsed.hostname
+                or parsed.username is not None
+                or parsed.password is not None
+                or parsed.path not in {"", "/"}
+                or parsed.query
+                or parsed.fragment
+                or any(c.isspace() for c in value)
+            ):
+                raise ValueError
+        except ValueError:
+            raise ValueError("公开入口须为不含路径和凭据的 HTTPS origin") from None
+        return f"https://{parsed.netloc.lower()}"
+
+    @model_validator(mode="after")
+    def require_public_authentication(self) -> Self:
+        """公开入口必须显式启用密钥；本机无密钥模式继续有效。"""
+        if self.public_origin is not None and self.access_key is None:
+            raise ValueError("公开入口必须配置访问密钥")
+        return self
 
     @field_validator("host")
     @classmethod
@@ -79,10 +130,15 @@ def load_settings() -> Settings:
             "mcp_profile": "必须为 business 或 maintenance",
             "max_file_bytes": "必须为正整数",
             "max_request_bytes": "必须为正整数",
+            "access_key": "必须为 1–512 个可见 ASCII 字符",
+            "public_origin": "必须为不含路径和凭据的 HTTPS origin，并配置访问密钥",
         }
         messages = []
         # Pydantic 的完整错误可能含输入值或自定义异常上下文，不能直接记入日志。
         for error in exc.errors(include_input=False, include_context=False, include_url=False):
+            if not error["loc"]:
+                messages.append("NOVEL_LENS_PUBLIC_ORIGIN: 公开入口必须配置访问密钥")
+                continue
             field = str(error["loc"][0])
             if field in rules:
                 messages.append(f"NOVEL_LENS_{field.upper()}: {rules[field]}")

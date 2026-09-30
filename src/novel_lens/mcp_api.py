@@ -17,6 +17,19 @@ from sqlalchemy.exc import SQLAlchemyError
 from starlette.concurrency import run_in_threadpool
 
 from novel_lens.analysis import AnalysisService
+from novel_lens.annotation_access import AnnotationAccessService
+from novel_lens.annotation_access_contracts import (
+    AnnotationDetails,
+    AnnotationDiff,
+    AnnotationDifference,
+    AnnotationExport,
+    AnnotationExportPage,
+    AnnotationHistory,
+    AnnotationHistoryPage,
+    AnnotationMany,
+    PreparationBatchPage,
+    PrepareBatches,
+)
 from novel_lens.asset_contracts import (
     MAX_ASSET_RESULT_BYTES,
     AnalysisCheckpoint,
@@ -89,8 +102,14 @@ from novel_lens.contracts import (
 )
 from novel_lens.errors import ServiceError, database_error
 from novel_lens.importing import ImportService
+from novel_lens.input_errors import input_error as validation_error
 from novel_lens.library import LibraryService
-from novel_lens.library_views import CompactLibraryPage, FullSourcePage
+from novel_lens.library_views import (
+    CompactLibraryPage,
+    ContinuedParagraphPage,
+    ContinuedReadOut,
+    FullSourcePage,
+)
 from novel_lens.local_files import read_source
 from novel_lens.preparation import PreparationService
 from novel_lens.query_views import (
@@ -105,6 +124,7 @@ from novel_lens.query_views import (
 )
 from novel_lens.reading import ReadingService
 from novel_lens.reference_contracts import (
+    BatchValidation,
     CleanupResult,
     LibraryBrowse,
     LibraryPage,
@@ -115,9 +135,11 @@ from novel_lens.reference_contracts import (
     PreparedBatch,
     PreparedFinish,
     PreparedImport,
+    PreparedRead,
     PreparedStatus,
     PrepareFinish,
     PrepareImport,
+    PrepareRead,
     PrepareStatus,
     SourceRead,
 )
@@ -672,7 +694,10 @@ def create_mcp(
         PrepareBatch,
         PreparedBatch,
         preparation.batch,
-        "阅读原文后原子保存一批标记、进度和接续信息；标签精确复用。"
+        "阅读原文后原子保存一批标记、进度和接续信息；expected_job_version 是任务版本。"
+        "marks 中 expected_annotation_version 是标注版本；"
+        "operation=patch 时省略字段保留，引用可增删。"
+        "撤回使用 status=withdrawn；提交前可 prepare_validate。标签精确复用。"
         "无新增标记也可提交。失败只回滚本批，旧批次保留；原键原输入可安全重试。",
         writes=True,
     )
@@ -704,9 +729,65 @@ def create_mcp(
     register(
         "prepare_receipt",
         PreparationReceipt,
-        PreparedImport | PreparedBatch | PreparedFinish,
+        PreparedImport | PreparedBatch | PreparedFinish | PreparedRead,
         preparation.receipt,
         "查询准备请求的历史提交快照；未找到时原请求可能仍在执行，不应盲换请求键。",
+    )
+
+    access = AnnotationAccessService(reading.database)
+    register(
+        "annotation_get_many",
+        AnnotationMany,
+        AnnotationDetails,
+        access.many,
+        "按请求顺序读取最多 50 条完整标注、版本、标签及每处引用段号；须指定单作品。",
+    )
+    register(
+        "annotation_history",
+        AnnotationHistory,
+        AnnotationHistoryPage,
+        access.history,
+        "分页列出可取得的版本；指定 version 返回完整旧快照。"
+        "history_complete 为 false 时有版本缺失，不可猜测。",
+    )
+    register(
+        "annotation_diff",
+        AnnotationDiff,
+        AnnotationDifference,
+        access.diff,
+        "比较同一标注的两个实际存在版本，返回变化字段的前后值；缺失版本明确报错。",
+    )
+    register(
+        "annotation_export",
+        AnnotationExport,
+        AnnotationExportPage,
+        access.export,
+        "分页导出作品完整标注和引用段号，默认包含撤回。job_id 只选该任务批次写过的标注当前版本。"
+        "EXPORT_CHANGED 时从第一页重新导出，不混用旧页；每页最多 50 条。",
+    )
+    register(
+        "prepare_batches",
+        PrepareBatches,
+        PreparationBatchPage,
+        access.batches,
+        "按任务版本分页列出已提交批次、处理范围、标注结果版本和结论；新批次不混入旧分页。",
+    )
+    register(
+        "prepare_validate",
+        PrepareBatch,
+        BatchValidation,
+        preparation.validate,
+        "只读预检完整批次，逐项返回 marks/references 的错误路径；不占请求键、不写入或推进进度。"
+        "预检不保证并发后仍有效，正式提交仍须检查版本。",
+    )
+    register(
+        "prepare_read",
+        PrepareRead,
+        PreparedRead,
+        preparation.read_progress,
+        "显式暂存已读范围和 recovery；expected_job_version 是任务版本。"
+        "不把 processed 降级，也不把 read 当作处理完成；超时按原请求键查回执。",
+        writes=True,
     )
 
     if settings.mcp_profile == "business":
@@ -718,6 +799,13 @@ def create_mcp(
                 "prepare_finish",
                 "prepare_cleanup",
                 "tag_update",
+                "annotation_get_many",
+                "annotation_history",
+                "annotation_diff",
+                "annotation_export",
+                "prepare_batches",
+                "prepare_validate",
+                "prepare_read",
             }:
                 del bindings[name]
         library = LibraryService(reading.database)
@@ -729,16 +817,19 @@ def create_mcp(
             "浏览作品、分类、标签、标注及原文目录。categories/tags/annotations "
             "可指定 work_id 或 work_ids，"
             "省略为全库可见范围。标签可按 category（含 unclassified）、namespace/query 筛选，"
-            "query 为名称、定义及别名字面查找；全库词表包含未使用标签。标注默认 active，"
+            "tags 的 query 查名称、定义及别名；annotations 的 query 查标题、适用范围与说明。"
+            "标注默认 active，"
             "kind=comparison 查看作品认识，kind=observation 查看具体观察；"
             "tag_match 默认 any，all 表示全部标签；支持单作品 part_id/section_id/source_range。"
-            "详情提供 work_id 与 annotation_id，读取所有引用后用 source_read 阅读原文。"
+            "source_range 按任一证据范围相交匹配，包含端点，可用 UUID 或段号。"
+            "详情提供 work_id 与 annotation_id，批量详情用 annotation_get_many；"
+            "随后用 source_read 阅读原文。"
             "分类和标签只作入口，不代表已理解写法；六类固定，不能创建分类。",
         )
         register(
             "prepare_status",
             PreparationInspect,
-            PreparedStatus | PreparedImport | PreparedBatch | PreparedFinish,
+            PreparedStatus | PreparedImport | PreparedBatch | PreparedFinish | PreparedRead,
             preparation.inspect,
             "提供 work_id 与 job_id 查询剩余范围、当前版本；"
             "或只提供 request_id 查询历史提交回执。超时先查回执，未找到时原请求仍可能在执行。",
@@ -746,10 +837,11 @@ def create_mcp(
         register(
             "source_read",
             SourceRead,
-            CompactParagraphPage | CompactReadOut | FullSourcePage,
+            ContinuedParagraphPage | ContinuedReadOut | FullSourcePage,
             library.read,
             "按章节分页读取完整自然段；提供起止段落时读取指定范围，before/after 扩展上下文。"
-            "返回实际范围和 next_cursor；续页保留请求范围与扩展参数。未返回的部分不计作已读。",
+            "也可用 start_ordinal/end_ordinal 一基段号，不能与 UUID 端点混用。"
+            "返回实际范围、next_cursor 和可直接调用的 next_request。未返回的部分不计作已读。",
         )
 
     async def list_tools(
@@ -768,10 +860,8 @@ def create_mcp(
         try:
             value = await run_in_threadpool(binding.execute, params.arguments or {})
             return result_message(value)
-        except ValidationError:
-            error = ServiceError(
-                "INVALID_INPUT", "输入参数缺失、类型或范围错误，或包含不支持的字段"
-            )
+        except ValidationError as exc:
+            error = validation_error(exc)
         except ServiceError as exc:
             error = exc
         except SQLAlchemyError as exc:

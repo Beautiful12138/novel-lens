@@ -38,6 +38,7 @@ def test_library_tag_lookup_and_annotation_filters(database: Database, tmp_path:
     other = import_book(preparation, tmp_path, "其他作品的证据。")
     span = batch_for(preparation, book).source_range
     other_span = batch_for(preparation, other).source_range
+    assert isinstance(span, SourceRange) and isinstance(other_span, SourceRange)
     namespace = str(uuid4())
     created_tags = []
     for name, aliases in [("陈墨瞳", ["诺诺_100%"]), ("另一观察", ["诺诺X100P"])]:
@@ -187,7 +188,7 @@ def test_library_tag_lookup_and_annotation_filters(database: Database, tmp_path:
         {"view": "tags", "query": "  "},
         {"view": "tags", "status": None},
         {"view": "works", "tag_ids": []},
-        {"view": "annotations", "work_id": str(uuid4()), "query": "人物"},
+        {"view": "sections", "work_id": str(uuid4()), "query": "人物"},
         {
             "view": "annotations",
             "work_id": str(uuid4()),
@@ -209,7 +210,7 @@ def test_default_mcp_asset_lookup_matches_http(postgres_url: str, tmp_path: Path
     async def exercise(rest: httpx.Client) -> None:
         async with Client(str(rest.base_url).rstrip("/") + "/mcp") as mcp:
             definitions = (await mcp.list_tools()).tools
-            assert len(definitions) == 8
+            assert len(definitions) == 15
             browse = next(t for t in definitions if t.name == "library_browse")
             assert {
                 "namespace",

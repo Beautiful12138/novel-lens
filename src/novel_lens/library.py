@@ -16,6 +16,7 @@ from novel_lens.assets import AssetService, range_bounds
 from novel_lens.contracts import (
     CompactParagraphPage,
     CompactReadOut,
+    OrdinalRange,
     Page,
     ParagraphSpan,
     ReadOut,
@@ -31,6 +32,8 @@ from novel_lens.library_views import (
     CompactPart,
     CompactSection,
     CompactTag,
+    ContinuedParagraphPage,
+    ContinuedReadOut,
     FullSourcePage,
     NamedItem,
 )
@@ -38,6 +41,7 @@ from novel_lens.query_views import annotation_view
 from novel_lens.reading import ReadingService, searchable_work, section_at
 from novel_lens.reference_contracts import LibraryBrowse, LibraryPage, SourceRead
 from novel_lens.schema import paragraphs
+from novel_lens.source_coordinates import resolve_range
 
 
 class LibraryService:
@@ -147,10 +151,17 @@ class LibraryService:
                     "tag_match",
                     "source_range",
                     "status",
+                    "query",
                     "limit",
                     "cursor",
                 }
             )
+            if request.source_range is not None:
+                assert request.work_id is not None
+                with self.database.engine.connect() as conn:
+                    values["source_range"] = resolve_range(
+                        conn, request.work_id, request.source_range
+                    )
             return LibraryPage(
                 view="annotations",
                 annotations=assets.browse_annotations(AnnotationBrowse(**values)),
@@ -187,8 +198,46 @@ class LibraryService:
             raise ServiceError("RESULT_TOO_LARGE", "结果超过 1 MiB，请减小分页数量", 413)
         return result
 
-    def read(self, request: SourceRead) -> CompactParagraphPage | CompactReadOut | FullSourcePage:
+    def read(
+        self, request: SourceRead
+    ) -> ContinuedParagraphPage | ContinuedReadOut | FullSourcePage:
+        """业务响应携带下一次完整参数，原 cursor 仍校验范围，不能被用于另一请求。"""
+        result = self._read(request)
+        continuation = (
+            request.model_dump(mode="json", exclude_none=True) | {"cursor": result.next_cursor}
+            if result.next_cursor
+            else None
+        )
+        payload = result.model_dump() | {"next_request": continuation}
+        if isinstance(result, FullSourcePage):
+            return self._bounded(FullSourcePage.model_validate(payload))
+        if isinstance(result, CompactReadOut):
+            return self._bounded(ContinuedReadOut.model_validate(payload))
+        return self._bounded(ContinuedParagraphPage.model_validate(payload))
+
+    def _read(self, request: SourceRead) -> CompactParagraphPage | CompactReadOut | FullSourcePage:
         """范围扩展由真实段落序号裁决；续页游标仍绑定扩展后的完整请求范围。"""
+        if request.start_ordinal is not None:
+            assert request.end_ordinal is not None
+            with self.database.engine.connect() as conn:
+                ref = resolve_range(
+                    conn,
+                    request.work_id,
+                    OrdinalRange(
+                        work_id=request.work_id,
+                        section_id=request.section_id,
+                        start_ordinal=request.start_ordinal,
+                        end_ordinal=request.end_ordinal,
+                    ),
+                )
+            request = request.model_copy(
+                update={
+                    "start_paragraph_id": ref.start_paragraph_id,
+                    "end_paragraph_id": ref.end_paragraph_id,
+                    "start_ordinal": None,
+                    "end_ordinal": None,
+                }
+            )
         if request.start_paragraph_id is None:
             page = self.reading.list_paragraphs(
                 request.work_id, request.section_id, request.limit, request.cursor, request.format

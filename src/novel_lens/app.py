@@ -13,14 +13,31 @@ from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException
 from starlette.responses import JSONResponse
 
+from novel_lens.ai_http import business_openapi
+from novel_lens.annotation_access import AnnotationAccessService
+from novel_lens.annotation_access_contracts import (
+    AnnotationDetails,
+    AnnotationDiff,
+    AnnotationDifference,
+    AnnotationExport,
+    AnnotationExportPage,
+    AnnotationHistory,
+    AnnotationHistoryPage,
+    AnnotationMany,
+    PreparationBatchPage,
+    PrepareBatches,
+)
 from novel_lens.asset_contracts import (
     AnnotationBrowse,
     AnnotationCoverage,
     AnnotationGet,
+    AssetWriteOut,
     BrowsedAnnotation,
     BrowsedAnnotationDetail,
+    TagUpdate,
 )
 from novel_lens.assets import AssetService
+from novel_lens.auth import mount_authentication, public_host
 from novel_lens.catalog import CatalogService
 from novel_lens.config import Settings
 from novel_lens.contracts import (
@@ -53,8 +70,14 @@ from novel_lens.errors import ServiceError
 from novel_lens.errors import database_error as public_database_error
 from novel_lens.http import RequestSizeLimit, upload, upload_schema
 from novel_lens.importing import ImportService
+from novel_lens.input_errors import input_error as validation_error
 from novel_lens.library import LibraryService
-from novel_lens.library_views import CompactLibraryPage, FullSourcePage
+from novel_lens.library_views import (
+    CompactLibraryPage,
+    ContinuedParagraphPage,
+    ContinuedReadOut,
+    FullSourcePage,
+)
 from novel_lens.mcp_api import create_mcp
 from novel_lens.preparation import PreparationService
 from novel_lens.query_views import (
@@ -65,6 +88,7 @@ from novel_lens.query_views import (
 )
 from novel_lens.reading import ReadingService
 from novel_lens.reference_contracts import (
+    BatchValidation,
     CleanupResult,
     LibraryBrowse,
     LibraryPage,
@@ -75,9 +99,11 @@ from novel_lens.reference_contracts import (
     PreparedBatch,
     PreparedFinish,
     PreparedImport,
+    PreparedRead,
     PreparedStatus,
     PrepareFinish,
     PrepareImport,
+    PrepareRead,
     SourceRead,
 )
 from novel_lens.search import SearchService
@@ -105,6 +131,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     search = SearchService(database)
     preparation = PreparationService(database, settings.max_file_bytes)
     library = LibraryService(database)
+    annotation_access = AnnotationAccessService(database)
     mcp = create_mcp(settings, importing, reading, assets)
     # 只允许当前监听端口；不沿用 SDK 默认允许任意本机端口的通配配置。
     names = {settings.host, "localhost"}
@@ -116,13 +143,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ]
     if settings.port == 80:
         hosts.extend(f"[{name}]" if ":" in name else name for name in sorted(names))
+    origins = [f"http://{host}" for host in hosts]
+    if (external_host := public_host(settings)) is not None:
+        hosts.append(external_host)
+        assert settings.public_origin is not None
+        origins.append(settings.public_origin)
     mcp_app = mcp.streamable_http_app(
         json_response=True,
         stateless_http=True,
         max_request_body_size=settings.max_request_bytes,
-        transport_security=TransportSecuritySettings(
-            allowed_hosts=hosts, allowed_origins=[f"http://{host}" for host in hosts]
-        ),
+        transport_security=TransportSecuritySettings(allowed_hosts=hosts, allowed_origins=origins),
     )
 
     @asynccontextmanager
@@ -135,6 +165,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(title="NovelLens", lifespan=lifespan)
     app.add_middleware(RequestSizeLimit, maximum=settings.max_request_bytes)
+    mount_authentication(app, settings)
 
     @app.exception_handler(ServiceError)
     async def service_error(request: Request, exc: ServiceError) -> JSONResponse:
@@ -143,9 +174,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.exception_handler(RequestValidationError)
     async def input_error(request: Request, exc: RequestValidationError) -> JSONResponse:
         # Pydantic 的 input、上下文和未知字段名可能含正文，不直接序列化。
-        return JSONResponse(
-            ServiceError("INVALID_INPUT", "输入参数或 JSON 结构无效").payload(), status_code=422
-        )
+        return JSONResponse(validation_error(exc).payload(), status_code=422)
 
     @app.exception_handler(HTTPException)
     async def transport_error(request: Request, exc: HTTPException) -> JSONResponse:
@@ -175,10 +204,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def prepare_batch(request: PrepareBatch) -> PreparedBatch:
         return preparation.batch(request)
 
-    @app.post("/preparation/status", summary="查询剩余范围与索引状态")
+    @app.post("/preparation/status", summary="查询任务状态或已提交回执")
     def prepare_status(
         request: PreparationInspect,
-    ) -> PreparedStatus | PreparedImport | PreparedBatch | PreparedFinish:
+    ) -> PreparedStatus | PreparedImport | PreparedBatch | PreparedFinish | PreparedRead:
         return preparation.inspect(request)
 
     @app.post("/library/browse", summary="分页浏览作品目录、标记与任务")
@@ -186,10 +215,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return library.browse(request)
 
     @app.post("/source/read", summary="连续读取原文并按需扩展上下文")
-    def source_read(request: SourceRead) -> CompactParagraphPage | CompactReadOut | FullSourcePage:
+    def source_read(
+        request: SourceRead,
+    ) -> ContinuedParagraphPage | ContinuedReadOut | FullSourcePage:
         return library.read(request)
 
-    @app.post("/preparation/finish", summary="校验阅读与索引后完成任务")
+    @app.post("/preparation/finish", summary="校验目标全部处理后完成任务")
     def prepare_finish(request: PrepareFinish) -> PreparedFinish:
         return preparation.finish(request)
 
@@ -197,8 +228,46 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def prepare_cleanup(request: PrepareCleanup) -> CleanupResult:
         return preparation.cleanup(request)
 
+    @app.post("/tags/update", summary="按当前版本修订共享标签")
+    def tag_update(request: TagUpdate) -> AssetWriteOut:
+        return assets.update_tag(request)
+
+    @app.post("/preparation/validate", summary="只读预检批次并逐项返回问题")
+    def prepare_validate(request: PrepareBatch) -> BatchValidation:
+        return preparation.validate(request)
+
+    @app.post("/preparation/read", summary="暂存已读范围和接续信息，不标记处理完成")
+    def prepare_read(request: PrepareRead) -> PreparedRead:
+        return preparation.read_progress(request)
+
+    @app.post("/preparation/batches", summary="按任务版本分页读取已提交批次")
+    def prepare_batches(request: PrepareBatches) -> PreparationBatchPage:
+        return annotation_access.batches(request)
+
+    @app.post("/annotations/details", summary="按请求顺序批量读取完整标注和引用段号")
+    def annotation_get_many(request: AnnotationMany) -> AnnotationDetails:
+        return annotation_access.many(request)
+
+    @app.post("/annotations/history", summary="列出可取得历史或读取指定版本快照")
+    def annotation_history(request: AnnotationHistory) -> AnnotationHistoryPage:
+        return annotation_access.history(request)
+
+    @app.post("/annotations/diff", summary="比较两个实际存在的标注版本")
+    def annotation_diff(request: AnnotationDiff) -> AnnotationDifference:
+        return annotation_access.diff(request)
+
+    @app.post("/annotations/export", summary="按作品或任务分页导出完整当前标注")
+    def annotation_export(request: AnnotationExport) -> AnnotationExportPage:
+        return annotation_access.export(request)
+
+    @app.get("/ai/openapi.json", include_in_schema=False)
+    def ai_openapi() -> dict[str, object]:
+        return business_openapi(app)
+
     @app.get("/preparation/receipts/{request_id}", summary="查询已提交准备请求的回执")
-    def prepare_receipt(request_id: UUID) -> PreparedImport | PreparedBatch | PreparedFinish:
+    def prepare_receipt(
+        request_id: UUID,
+    ) -> PreparedImport | PreparedBatch | PreparedFinish | PreparedRead:
         return preparation.receipt(PreparationReceipt(request_id=request_id))
 
     @app.post(

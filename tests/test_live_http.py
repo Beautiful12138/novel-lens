@@ -25,6 +25,8 @@ def running_server(
     request_limit: int | None = None,
     request_timeout: float = 10,
     mcp_profile: Literal["business", "maintenance"] = "maintenance",
+    access_key: str | None = None,
+    public_origin: str | None = None,
 ) -> Iterator[httpx.Client]:
     """随机端口启动服务，退出时发送关闭信号；超时强制回收并判定失败。"""
     with socket.socket() as listener:
@@ -34,6 +36,10 @@ def running_server(
     env.update(NOVEL_LENS_DATABASE_URL=url, NOVEL_LENS_PORT=str(port))
     # 既有维护接口用例显式选择维护配置；业务工具另行验证默认八项入口。
     env["NOVEL_LENS_MCP_PROFILE"] = mcp_profile
+    if access_key is not None:
+        env["NOVEL_LENS_ACCESS_KEY"] = access_key
+    if public_origin is not None:
+        env["NOVEL_LENS_PUBLIC_ORIGIN"] = public_origin
     if request_limit is not None:
         env["NOVEL_LENS_MAX_REQUEST_BYTES"] = str(request_limit)
     with (

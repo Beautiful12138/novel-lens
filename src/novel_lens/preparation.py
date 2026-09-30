@@ -4,13 +4,20 @@ from hashlib import sha256
 from typing import Any
 from uuid import UUID, uuid4, uuid5
 
+from pydantic import BaseModel
 from sqlalchemy import Connection, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 
-from novel_lens.analysis import AnalysisService, locked_job
+from novel_lens.analysis import (
+    AnalysisService,
+    advance_job,
+    locked_job,
+    selected_paragraphs,
+    store_coverage,
+    validate_recovery,
+)
 from novel_lens.asset_contracts import (
     MAX_ASSET_RESULT_BYTES,
-    AnalysisCheckpoint,
     AnalysisCheckpointOut,
     AnalysisJobComplete,
     AnalysisJobCreate,
@@ -23,17 +30,21 @@ from novel_lens.asset_contracts import (
     AnnotationSetStatus,
     AnnotationUpdate,
     CoverageGet,
+    CoverageMark,
     Recovery,
 )
 from novel_lens.assets import AssetService, compact
-from novel_lens.catalog import CatalogService, lock_work
+from novel_lens.catalog import CatalogService, lock_work, request_fingerprint
 from novel_lens.contracts import PartOut, WorkCreate, WorkOut
 from novel_lens.database import Database
 from novel_lens.errors import ServiceError
 from novel_lens.importing import ImportService
 from novel_lens.local_files import read_source
+from novel_lens.preparation_validation import inspect_batch
 from novel_lens.reading import work_at
 from novel_lens.reference_contracts import (
+    BatchIssue,
+    BatchValidation,
     CleanupResult,
     PreparationInspect,
     PreparationReceipt,
@@ -42,12 +53,15 @@ from novel_lens.reference_contracts import (
     PreparedBatch,
     PreparedFinish,
     PreparedImport,
+    PreparedRead,
     PreparedStatus,
     PrepareFinish,
     PrepareImport,
+    PrepareRead,
     PrepareStatus,
 )
 from novel_lens.schema import analysis_jobs, catalog_requests, parts, tags
+from novel_lens.source_coordinates import resolve_range
 from novel_lens.work_management import WorkManagementService
 
 
@@ -161,11 +175,6 @@ class PreparationService:
 
     def batch(self, request: PrepareBatch) -> PreparedBatch:
         """完整替换本批标记并推进进度；空标记批次也须提供阅读处理结论。"""
-        checkpoint = AnalysisCheckpoint(
-            **request.model_dump(exclude={"marks", "request_id", "reopen_reason"}),
-            request_id=uuid5(request.request_id, "checkpoint"),
-            writes=[],
-        )
 
         def action(conn: Connection) -> tuple[UUID, dict[str, Any]]:
             lock_work(conn, request.work_id)
@@ -174,11 +183,23 @@ class PreparationService:
             resources += [
                 f"annotation_id:{m.annotation_id}" for m in request.marks if m.annotation_id
             ]
-            resources += [f"tag:{t.namespace}:{t.name}" for m in request.marks for t in m.tags]
+            resources += [
+                f"tag:{t.namespace}:{t.name}" for m in request.marks for t in (m.tags or [])
+            ]
             for key in sorted(
                 {int.from_bytes(sha256(v.encode()).digest()[:4], signed=True) for v in resources}
             ):
                 conn.execute(text("SELECT pg_advisory_xact_lock(71002,:k)"), {"k": key})
+            report, checkpoint, resolved_marks = inspect_batch(conn, self.database, request)
+            if not report.valid:
+                first = report.issues[0]
+                raise ServiceError(
+                    first.code,
+                    first.message,
+                    409 if first.code in {"VERSION_CONFLICT", "JOB_STATE_CONFLICT"} else 422,
+                    {"issues": [issue.model_dump() for issue in report.issues]},
+                )
+            assert checkpoint is not None
             job = locked_job(conn, checkpoint)
             if job["status"] == "completed" and request.reopen_reason is not None:
                 # 先在本事务恢复运行态，版本仅由后面的 checkpoint 推进一次。
@@ -196,7 +217,7 @@ class PreparationService:
                 )
             writer = AssetService(self.database, conn)
             tag_ids: dict[tuple[str, str], UUID] = {}
-            tag_values = {(t.namespace, t.name): t for m in request.marks for t in m.tags}
+            tag_values = {(t.namespace, t.name): t for m in resolved_marks for t in m.tags}
             for tag_key, tag in sorted(tag_values.items()):
                 identifier = conn.execute(
                     insert(tags)
@@ -227,19 +248,26 @@ class PreparationService:
                     ).scalar_one()
                 tag_ids[tag_key] = identifier
             annotations: list[AnnotationOut] = []
-            for ordinal, mark in enumerate(request.marks):
+            for ordinal, mark in enumerate(resolved_marks):
                 values = dict(
                     request_id=uuid5(request.request_id, f"mark:{ordinal}"),
                     work_id=request.work_id,
-                    references=mark.references,
-                    kind=mark.kind,
-                    title=mark.title,
-                    scope_note=mark.scope_note,
-                    entity_ids=[],
-                    note=mark.note,
-                    tag_ids=[tag_ids[(t.namespace, t.name)] for t in mark.tags],
+                    references=mark.content.references,
+                    kind=mark.content.kind,
+                    title=mark.content.title,
+                    scope_note=mark.content.scope_note,
+                    entity_ids=mark.entity_ids,
+                    note=mark.content.note,
+                    tag_ids=(
+                        mark.preserved_tag_ids
+                        if mark.preserved_tag_ids is not None
+                        else [tag_ids[(t.namespace, t.name)] for t in mark.tags]
+                    ),
                 )
-                if mark.annotation_id is None:
+                annotation: BaseModel | None
+                if mark.status_only:
+                    annotation = mark.original
+                elif mark.annotation_id is None:
                     annotation = writer.create_annotation(
                         AnnotationCreate.model_validate(values)
                     ).result
@@ -257,7 +285,7 @@ class PreparationService:
                         )
                     ).result
                 assert isinstance(annotation, AnnotationOut)
-                if annotation.status != mark.status:
+                if annotation.status != mark.status or mark.status_only:
                     annotation = writer.set_annotation_status(
                         AnnotationSetStatus(
                             request_id=uuid5(request.request_id, f"status:{ordinal}"),
@@ -287,6 +315,83 @@ class PreparationService:
             self.catalog.write(
                 request.request_id,
                 "prepare_batch",
+                request.model_dump(mode="json"),
+                action,
+            )
+        )
+
+    def validate(self, request: PrepareBatch) -> BatchValidation:
+        """在只读快照预检；不占请求键，不写入数据库，正式提交仍重新校验。"""
+        with (
+            self.database.engine.connect().execution_options(
+                isolation_level="REPEATABLE READ"
+            ) as conn,
+            conn.begin(),
+        ):
+            conn.execute(text("SET TRANSACTION READ ONLY"))
+            existing = conn.execute(
+                select(catalog_requests.c.fingerprint).where(
+                    catalog_requests.c.request_id == request.request_id
+                )
+            ).scalar_one_or_none()
+            if existing is not None:
+                same = existing == request_fingerprint(
+                    "prepare_batch", request.model_dump(mode="json")
+                )
+                return BatchValidation(
+                    valid=same,
+                    already_committed=same,
+                    issues=[]
+                    if same
+                    else [
+                        BatchIssue(
+                            path=["request_id"],
+                            code="REQUEST_CONFLICT",
+                            message="请求键已用于另一操作或输入",
+                        )
+                    ],
+                )
+            report, _, _ = inspect_batch(conn, self.database, request)
+            return report
+
+    def read_progress(self, request: PrepareRead) -> PreparedRead:
+        """只推进未处理段落到 read，接续信息与任务版本在同一幂等事务保存。"""
+
+        def action(conn: Connection) -> tuple[UUID, dict[str, Any]]:
+            lock_work(conn, request.work_id)
+            ref = resolve_range(conn, request.work_id, request.source_range)
+            mark = CoverageMark(
+                request_id=request.request_id,
+                work_id=request.work_id,
+                job_id=request.job_id,
+                expected_version=request.expected_version,
+                source_range=ref,
+                status="read",
+            )
+            job = locked_job(conn, mark, running=True)
+            ids = selected_paragraphs(conn, mark)
+            validate_recovery(conn, request.work_id, request.recovery)
+            store_coverage(conn, request.job_id, ids, "read")
+            updated = advance_job(conn, job, recovery=request.recovery.model_dump(mode="json"))
+            remaining = AnalysisService(self.database, conn).coverage(
+                CoverageGet(
+                    work_id=request.work_id,
+                    job_id=request.job_id,
+                    remaining_only=True,
+                    limit=20,
+                )
+            )
+            return request.work_id, PreparedRead(
+                request_id=request.request_id,
+                job=updated,
+                remaining=remaining,
+                work_ready=False,
+            ).model_dump(mode="json")
+
+        return PreparedRead.model_validate(
+            self.catalog.write(
+                request.request_id,
+                "prepare_read",
                 request.model_dump(mode="json"),
                 action,
             )
@@ -351,7 +456,7 @@ class PreparationService:
 
     def receipt(
         self, request: PreparationReceipt
-    ) -> PreparedImport | PreparedBatch | PreparedFinish:
+    ) -> PreparedImport | PreparedBatch | PreparedFinish | PreparedRead:
         """查询已提交快照；未找到不证明正在执行的请求失败，应原键原输入重试。"""
         with self.database.engine.connect() as conn:
             row = (
@@ -359,7 +464,7 @@ class PreparationService:
                     select(catalog_requests).where(
                         catalog_requests.c.request_id == request.request_id,
                         catalog_requests.c.operation.in_(
-                            ["prepare_import", "prepare_batch", "prepare_finish"]
+                            ["prepare_import", "prepare_batch", "prepare_finish", "prepare_read"]
                         ),
                     )
                 )
@@ -370,16 +475,23 @@ class PreparationService:
                 raise ServiceError(
                     "PREPARATION_NOT_COMMITTED", "尚无已提交回执，原请求可能仍在执行", 404
                 )
-            models: dict[str, type[PreparedImport] | type[PreparedBatch] | type[PreparedFinish]] = {
+            models: dict[
+                str,
+                type[PreparedImport]
+                | type[PreparedBatch]
+                | type[PreparedFinish]
+                | type[PreparedRead],
+            ] = {
                 "prepare_import": PreparedImport,
                 "prepare_batch": PreparedBatch,
                 "prepare_finish": PreparedFinish,
+                "prepare_read": PreparedRead,
             }
             return models[row["operation"]].model_validate(row["response"] | {"replayed": True})
 
     def inspect(
         self, request: PreparationInspect
-    ) -> PreparedStatus | PreparedImport | PreparedBatch | PreparedFinish:
+    ) -> PreparedStatus | PreparedImport | PreparedBatch | PreparedFinish | PreparedRead:
         """日常工具内统一查询当前状态或历史回执，二者保持各自的时间语义。"""
         if request.request_id is not None:
             return self.receipt(PreparationReceipt(request_id=request.request_id))

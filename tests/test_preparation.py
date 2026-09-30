@@ -11,6 +11,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from novel_lens.asset_contracts import Recovery, TagUpdate
 from novel_lens.assets import AssetService
+from novel_lens.contracts import SourceRange
 from novel_lens.database import Database
 from novel_lens.errors import ServiceError
 from novel_lens.preparation import PreparationService
@@ -113,6 +114,7 @@ def test_batch_failure_preserves_previous_and_rolls_back_everything(
     book = import_book(preparation, tmp_path)
     batch = batch_for(preparation, book)
     ref = batch.source_range
+    assert isinstance(ref, SourceRange)
     first = batch.model_copy(
         update={"source_range": ref.model_copy(update={"end_paragraph_id": ref.start_paragraph_id})}
     )

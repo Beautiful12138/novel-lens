@@ -93,6 +93,9 @@ export async function request<T>(
   });
   if (!response.ok) {
     const error = await response.json().catch(() => null);
+    if (response.status === 401 && !path.startsWith('/auth/')) {
+      window.dispatchEvent(new Event('novel-lens:unauthorized'));
+    }
     throw new ApiError(error?.message || `服务暂时无法读取数据（${response.status}）`, error?.code);
   }
   return response.json();

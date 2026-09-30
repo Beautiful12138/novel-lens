@@ -42,6 +42,13 @@ def lock_work(connection: Connection, work_id: UUID) -> WorkOut:
     return WorkOut.model_validate(row)
 
 
+def request_fingerprint(operation: str, payload: dict[str, Any]) -> str:
+    """预检与提交共用规范指纹，旧请求键的重放不受当前资产版本影响。"""
+    return sha256(
+        json.dumps([operation, payload], sort_keys=True, ensure_ascii=True).encode()
+    ).hexdigest()
+
+
 class CatalogService:
     def __init__(self, database: Database, connection: Connection | None = None) -> None:
         self.database = database
@@ -55,9 +62,7 @@ class CatalogService:
         action: Callable[[Connection], tuple[UUID, dict[str, Any]]],
     ) -> dict[str, Any]:
         """请求键锁早于作品锁；重放发生在当前版本、文件名等可变条件校验之前。"""
-        fingerprint = sha256(
-            json.dumps([operation, payload], sort_keys=True, ensure_ascii=True).encode()
-        ).hexdigest()
+        fingerprint = request_fingerprint(operation, payload)
         key = int.from_bytes(sha256(f"catalog:{request_id}".encode()).digest()[:8], signed=True)
         try:
             with (
