@@ -59,7 +59,6 @@ from novel_lens.schema import (
 from novel_lens.schema import (
     paragraphs,
     sections,
-    style_guides,
 )
 
 
@@ -438,10 +437,6 @@ class AnalysisService:
                         writer.update_relation(item.input)
                     case "relation_set_status":
                         writer.set_relation_status(item.input)
-                    case "style_guide_create":
-                        writer.create_style_guide(item.input)
-                    case "style_guide_update":
-                        writer.update_style_guide(item.input)
             store_coverage(connection, request.job_id, ids, "processed")
             updated = advance_job(
                 connection, row, recovery=request.recovery.model_dump(mode="json")
@@ -461,26 +456,13 @@ class AnalysisService:
         return self.assets._write(request, "analysis_checkpoint", action)
 
     def complete(self, request: AnalysisJobComplete) -> AssetWriteOut:
-        """锁定任务与导航并校验进度和版本，保存校准声明但不判断文学质量。"""
+        """锁定任务并校验进度和版本，保存校准声明但不判断文学质量。"""
 
         def action(connection: Connection) -> AnalysisJobOut:
             row = locked_job(connection, request, running=True)
             counts = counts_for(connection, [request.job_id])[request.job_id]
             if counts.unprocessed or counts.read or counts.needs_revisit:
                 raise ServiceError("JOB_INCOMPLETE", "目标段落尚未全部处理完成", 409)
-            guide = (
-                connection.execute(
-                    select(style_guides)
-                    .where(style_guides.c.work_id == request.work_id)
-                    .with_for_update()
-                )
-                .mappings()
-                .first()
-            )
-            if guide is None and request.style_guide_version is not None:
-                raise ServiceError("STYLE_GUIDE_NOT_FOUND", "完成任务前须建立风格导航", 404)
-            if guide is not None and request.style_guide_version is not None:
-                check_version(guide, request.style_guide_version)
             validate_recovery(connection, request.work_id, request.recovery)
             return advance_job(
                 connection,
@@ -488,7 +470,6 @@ class AnalysisService:
                 status="completed",
                 recovery=request.recovery.model_dump(mode="json"),
                 completion=dict(
-                    style_guide_version=request.style_guide_version,
                     calibration_note=request.calibration_note,
                     limitations=request.limitations,
                 ),

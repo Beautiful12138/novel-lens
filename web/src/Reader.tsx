@@ -262,7 +262,7 @@ function ReaderBody({
             </div>
             {notes && focus && data && (
               <p className="focus-caption" role="status">
-                当前分析：{focus.tags.map((tag) => tag.full_name).join(' · ') || '无标签标注'}
+                当前分析：{focus.annotation.title}
                 <br />
                 {visibleRanges.length
                   ? visibleRanges

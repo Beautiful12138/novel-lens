@@ -8,10 +8,9 @@ from novel_lens.asset_contracts import (
     MAX_ASSET_RESULT_BYTES,
     AnalysisJobGet,
     AnalysisJobList,
+    AnnotationBrowse,
     AnnotationGet,
-    AnnotationList,
-    TagList,
-    TagSearch,
+    TagBrowse,
 )
 from novel_lens.assets import AssetService, range_bounds
 from novel_lens.contracts import (
@@ -24,9 +23,9 @@ from novel_lens.contracts import (
     SourceRange,
 )
 from novel_lens.database import Database
-from novel_lens.embedding import EmbeddingClient
 from novel_lens.errors import ServiceError
 from novel_lens.library_views import (
+    CompactBrowsedAnnotation,
     CompactJob,
     CompactLibraryPage,
     CompactPart,
@@ -35,19 +34,17 @@ from novel_lens.library_views import (
     FullSourcePage,
     NamedItem,
 )
-from novel_lens.query_views import annotation_list_view, annotation_view
+from novel_lens.query_views import annotation_view
 from novel_lens.reading import ReadingService, searchable_work, section_at
 from novel_lens.reference_contracts import LibraryBrowse, LibraryPage, SourceRead
-from novel_lens.reference_index import index_state
 from novel_lens.schema import paragraphs
 
 
 class LibraryService:
     """目录仅返回当前请求的投影；原文分页保留完整自然段，不解释文学边界。"""
 
-    def __init__(self, database: Database, model: EmbeddingClient) -> None:
+    def __init__(self, database: Database) -> None:
         self.database = database
-        self.model = model
         self.reading = ReadingService(database)
 
     def browse(self, request: LibraryBrowse) -> LibraryPage | CompactLibraryPage:
@@ -74,13 +71,20 @@ class LibraryService:
                 next_cursor=full.sections.next_cursor,
             )
         if full.annotations is not None:
-            assert request.work_id is not None
-            result.annotations = annotation_list_view(full.annotations, request.work_id, "compact")  # type: ignore[assignment]
+            result.annotations = Page[CompactBrowsedAnnotation](
+                items=[
+                    CompactBrowsedAnnotation.model_validate(item.model_dump())
+                    for item in full.annotations.items
+                ],
+                next_cursor=full.annotations.next_cursor,
+            )
         if full.tag_page is not None:
             result.tag_page = Page[CompactTag](
                 items=[CompactTag.model_validate(tag.model_dump()) for tag in full.tag_page.items],
                 next_cursor=full.tag_page.next_cursor,
             )
+        result.categories = full.categories
+        result.locations = full.locations
         if full.annotation is not None:
             result.annotation = annotation_view(full.annotation, "compact")  # type: ignore[assignment]
             result.tags = [CompactTag.model_validate(tag.model_dump()) for tag in full.tags or []]
@@ -104,21 +108,52 @@ class LibraryService:
         return self._bounded(result)
 
     def _browse(self, request: LibraryBrowse) -> LibraryPage:
-        if request.view == "tags":
-            tag_request = (
-                TagSearch(
-                    query=request.query,
-                    namespace=request.namespace,
-                    limit=request.limit,
-                    cursor=request.cursor,
+        assets = AssetService(self.database)
+        if request.view in {"tags", "categories"}:
+            tag_request = TagBrowse(
+                work_id=request.work_id,
+                work_ids=request.work_ids,
+                category=request.category,
+                namespace=request.namespace,
+                query=request.query,
+                limit=request.limit,
+                cursor=request.cursor,
+            )
+            if request.view == "categories":
+                return LibraryPage(
+                    view="categories", categories=assets.browse_categories(tag_request)
                 )
-                if request.query is not None
-                else TagList(
-                    namespace=request.namespace, limit=request.limit, cursor=request.cursor
+            return LibraryPage(view="tags", tag_page=assets.browse_tags(tag_request))
+        if request.view == "annotations":
+            if request.annotation_id is not None:
+                assert request.work_id is not None
+                detail = assets.browse_annotation_detail(
+                    AnnotationGet(work_id=request.work_id, annotation_id=request.annotation_id)
                 )
+                return LibraryPage(
+                    view="annotations",
+                    annotation=detail.annotation,
+                    tags=detail.tags,
+                    locations=detail.locations,
+                )
+            values = request.model_dump(
+                include={
+                    "work_id",
+                    "work_ids",
+                    "part_id",
+                    "section_id",
+                    "kind",
+                    "tag_ids",
+                    "tag_match",
+                    "source_range",
+                    "status",
+                    "limit",
+                    "cursor",
+                }
             )
             return LibraryPage(
-                view="tags", tag_page=AssetService(self.database).list_tags(tag_request)
+                view="annotations",
+                annotations=assets.browse_annotations(AnnotationBrowse(**values)),
             )
         if request.view == "works":
             return LibraryPage(
@@ -127,12 +162,7 @@ class LibraryService:
         assert request.work_id is not None
         with self.database.engine.connect() as conn:
             work = searchable_work(conn, request.work_id)
-            indexes = (
-                index_state(conn, request.work_id, self.model.contract_id)
-                if request.format == "full"
-                else None
-            )
-        result = LibraryPage(view=request.view, work=work, indexes=indexes)
+        result = LibraryPage(view=request.view, work=work)
         match request.view:
             case "parts":
                 result.parts = self.reading.list_parts(
@@ -142,26 +172,6 @@ class LibraryService:
                 result.sections = self.reading.list_sections(
                     request.work_id, request.limit, request.cursor, request.part_id
                 )
-            case "annotations":
-                assets = AssetService(self.database)
-                if request.annotation_id is not None:
-                    result.annotation = assets.get_annotation(
-                        AnnotationGet(work_id=request.work_id, annotation_id=request.annotation_id)
-                    )
-                    result.tags = [
-                        assets.get_tag(identifier) for identifier in result.annotation.tag_ids
-                    ]
-                else:
-                    result.annotations = assets.list_annotations(
-                        AnnotationList(
-                            work_id=request.work_id,
-                            limit=request.limit,
-                            cursor=request.cursor,
-                            status=request.status,
-                            tag_ids=request.tag_ids,
-                            source_range=request.source_range,
-                        )
-                    )
             case "jobs":
                 result.jobs = AnalysisService(self.database).list(
                     AnalysisJobList(

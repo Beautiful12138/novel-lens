@@ -4,9 +4,9 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from annotation_fixtures import annotation_fields
 from starlette.testclient import TestClient
 from test_preparation import import_book
-from test_semantic import DeterministicModel
 
 from novel_lens.asset_contracts import (
     AnnotationCreate,
@@ -27,7 +27,7 @@ def test_cross_work_assets_filters_and_cursor(
     client: TestClient, database: Database, tmp_path: Path
 ) -> None:
     """第二处引用也参与章节筛选，状态/标签/搜索游标不能互换。"""
-    prep = PreparationService(database, 1024 * 1024, DeterministicModel())
+    prep = PreparationService(database, 1024 * 1024)
     books = [
         import_book(prep, tmp_path, "第一章正文。\n标题：第二章\n第二章正文。"),
         import_book(prep, tmp_path, "另一部作品。"),
@@ -67,7 +67,7 @@ def test_cross_work_assets_filters_and_cursor(
             AnnotationCreate(
                 request_id=uuid4(),
                 work_id=book.work.id,
-                source_ranges=spans,
+                **annotation_fields(spans),
                 tag_ids=[tag.id],
                 note=note,
             )
@@ -78,7 +78,7 @@ def test_cross_work_assets_filters_and_cursor(
         AnnotationCreate(
             request_id=uuid4(),
             work_id=books[0].work.id,
-            source_ranges=scopes[0],
+            **annotation_fields(scopes[0]),
             tag_ids=[tag.id],
             note="撤回说明",
         )

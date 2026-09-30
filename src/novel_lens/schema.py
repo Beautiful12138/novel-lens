@@ -161,6 +161,18 @@ tags = Table(
     Column("name", String(256, collation="C"), nullable=False),
     Column("description", Text, nullable=False),
     Column("aliases", JSONB, nullable=False),
+    Column(
+        "categories",
+        JSONB,
+        nullable=False,
+        server_default="[]",
+        comment="固定写法分类的集合；空数组表示未分类",
+    ),
+    CheckConstraint(
+        "jsonb_typeof(categories)='array' AND categories <@ "
+        '\'["content","perspective","interaction","language","structure","emotion"]\'::jsonb',
+        name="ck_tags_categories",
+    ),
     Column("created_at", DateTime(timezone=True), server_default=func.now(), nullable=False),
     UniqueConstraint("namespace", "name", name="uq_tags_name"),
     Column(
@@ -181,7 +193,22 @@ annotations = Table(
     metadata,
     Column("id", Uuid, primary_key=True),
     Column("work_id", Uuid, ForeignKey("works.id"), nullable=False),
-    Column("note", Text),
+    Column("note", Text, nullable=False),
+    Column(
+        "kind",
+        String(16),
+        nullable=False,
+        comment="具体观察 observation 或作品认识 comparison；不代表质量和覆盖",
+    ),
+    Column("title", String(256), nullable=False),
+    Column(
+        "scope_note", Text, nullable=False, comment="AI 声明的适用范围与限制，不替代实际分析进度"
+    ),
+    CheckConstraint("kind IN ('observation', 'comparison')", name="ck_annotations_kind"),
+    CheckConstraint(
+        "length(btrim(title)) > 0 AND length(btrim(scope_note)) > 0 AND length(btrim(note)) > 0",
+        name="ck_annotations_content",
+    ),
     Column("version", Integer, nullable=False),
     Column("created_at", DateTime(timezone=True), server_default=func.now(), nullable=False),
     Column("updated_at", DateTime(timezone=True), server_default=func.now(), nullable=False),
@@ -194,7 +221,7 @@ annotations = Table(
         comment="有效或已撤回；撤回保留证据并退出默认检索",
     ),
     CheckConstraint("status IN ('active', 'withdrawn')", name="ck_annotations_status"),
-    comment="原文入口及可选写法说明；版本条件防止并发覆盖，不代表分析进度",
+    comment="具体观察与作品认识；版本条件防止并发覆盖，不代表分析进度",
 )
 Index(
     "ix_annotations_work_created_id",
@@ -219,6 +246,16 @@ annotation_ranges = Table(
     Column("section_id", Uuid, ForeignKey("sections.id"), nullable=False),
     Column("start_paragraph_id", Uuid, ForeignKey("paragraphs.id"), nullable=False),
     Column("end_paragraph_id", Uuid, ForeignKey("paragraphs.id"), nullable=False),
+    Column(
+        "reading_start_paragraph_id",
+        Uuid,
+        ForeignKey("paragraphs.id"),
+        nullable=False,
+        comment="同章连续阅读起点，业务事务核验证据包含关系",
+    ),
+    Column("reading_end_paragraph_id", Uuid, ForeignKey("paragraphs.id"), nullable=False),
+    Column("role_note", Text, nullable=False, comment="该处证据在当前认识中的用途"),
+    CheckConstraint("length(btrim(role_note)) > 0", name="ck_annotation_ranges_role"),
     UniqueConstraint(
         "annotation_id",
         "work_id",
@@ -344,59 +381,6 @@ relation_entities = Table(
 )
 Index("ix_relation_entities_entity", relation_entities.c.entity_id)
 
-style_guides = Table(
-    "style_guides",
-    metadata,
-    Column("work_id", Uuid, ForeignKey("works.id"), primary_key=True),
-    Column("scope_note", Text, nullable=False),
-    Column("version", Integer, nullable=False),
-    Column("created_at", DateTime(timezone=True), server_default=func.now(), nullable=False),
-    Column("updated_at", DateTime(timezone=True), server_default=func.now(), nullable=False),
-    CheckConstraint("version > 0", name="ck_style_guides_version"),
-    comment="每作品一份风格导航；范围说明是调用方声明，不代表分析进度",
-)
-
-style_guide_entries = Table(
-    "style_guide_entries",
-    metadata,
-    Column("work_id", Uuid, ForeignKey("style_guides.work_id"), primary_key=True),
-    Column("ordinal", Integer, primary_key=True),
-    Column("title", String(256), nullable=False),
-    Column("kind", String(16), nullable=False),
-    Column("description", Text, nullable=False),
-    Column("applicability", Text, nullable=False),
-    CheckConstraint("ordinal > 0", name="ck_style_guide_entries_ordinal"),
-    CheckConstraint(
-        "kind IN ('baseline', 'variation', 'exception')", name="ck_style_guide_entries_kind"
-    ),
-    comment="有序写法判断及适用边界；整体修订时替换，顺序不是稳定身份",
-)
-
-style_guide_ranges = Table(
-    "style_guide_ranges",
-    metadata,
-    Column("work_id", Uuid, primary_key=True),
-    Column("entry_ordinal", Integer, primary_key=True),
-    Column("ordinal", Integer, primary_key=True),
-    Column("section_id", Uuid, ForeignKey("sections.id"), nullable=False),
-    Column("start_paragraph_id", Uuid, ForeignKey("paragraphs.id"), nullable=False),
-    Column("end_paragraph_id", Uuid, ForeignKey("paragraphs.id"), nullable=False),
-    ForeignKeyConstraint(
-        ["work_id", "entry_ordinal"],
-        ["style_guide_entries.work_id", "style_guide_entries.ordinal"],
-    ),
-    UniqueConstraint(
-        "work_id",
-        "entry_ordinal",
-        "section_id",
-        "start_paragraph_id",
-        "end_paragraph_id",
-        name="uq_style_guide_ranges_ref",
-    ),
-    CheckConstraint("ordinal > 0", name="ck_style_guide_ranges_ordinal"),
-    comment="条目有序证据；事务内核验同作品、同章节及端点顺序，不复制原文",
-)
-
 analysis_jobs = Table(
     "analysis_jobs",
     metadata,
@@ -425,7 +409,7 @@ analysis_jobs = Table(
     CheckConstraint(
         "(status = 'completed') = (completion IS NOT NULL)", name="ck_analysis_jobs_completion"
     ),
-    comment="独立深读任务；接续信息不替代进度，完成说明记录当时导航版本",
+    comment="独立深读任务；接续信息不替代进度，完成说明记录当前认识的限制",
 )
 Index(
     "ix_analysis_jobs_work_created_id",

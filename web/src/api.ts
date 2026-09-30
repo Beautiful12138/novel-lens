@@ -21,6 +21,9 @@ export type Span = { section_id: string; start_paragraph_id: string; end_paragra
 export type Tag = { id: string; full_name: string; description?: string };
 export type Mark = {
   id: string;
+  kind: 'observation' | 'comparison';
+  title: string;
+  scope_note: string;
   note_preview: string | null;
   note_truncated: boolean;
   source_range_count: number;
@@ -31,8 +34,11 @@ export type Annotation = {
   status: 'active' | 'withdrawn';
   id: string;
   work_id: string;
-  note: string | null;
-  source_ranges: Span[];
+  kind: 'observation' | 'comparison';
+  title: string;
+  scope_note: string;
+  note: string;
+  references: { evidence_range: Span; reading_range: Span; role_note: string }[];
 };
 export type Detail = { annotation: Annotation; tags: Tag[] };
 export type ReferenceLocation = Span & {
@@ -40,6 +46,8 @@ export type ReferenceLocation = Span & {
   section_title: string;
   start_ordinal: number;
   end_ordinal: number;
+  reading_start_ordinal: number;
+  reading_end_ordinal: number;
 };
 export type LocatedDetail = Detail & { locations: ReferenceLocation[] };
 export type ParagraphPick = { span: Span; ordinal: number; count: number };

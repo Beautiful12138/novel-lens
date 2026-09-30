@@ -58,7 +58,7 @@ def test_status_filters_replay_and_restore(
     revoked = assets.set_annotation_status(request).result
     assert isinstance(revoked, AnnotationOut)
     assert revoked.status == "withdrawn" and revoked.version == 2
-    assert revoked.source_ranges == a.source_ranges and revoked.note == a.note
+    assert revoked.references == a.references and revoked.note == a.note
     assert assets.set_annotation_status(request).replayed
     assert [p.id for p in assets.list_annotations(query).items] == [b.id]
     assert (
@@ -96,7 +96,11 @@ def test_status_filters_replay_and_restore(
         work_id=a.work_id,
         annotation_id=a.id,
         expected_version=2,
-        source_ranges=a.source_ranges,
+        references=a.references,
+        kind="observation",
+        title="样例写法观察",
+        scope_note="限于给定原文",
+        entity_ids=[],
         tag_ids=[],
         note="修正说明",
     )
@@ -220,7 +224,11 @@ def test_correction_checkpoint_rollback_and_content_status_race(
         work_id=a.work_id,
         annotation_id=a.id,
         expected_version=old.version,
-        source_ranges=a.source_ranges,
+        references=a.references,
+        kind="observation",
+        title="样例写法观察",
+        scope_note="限于给定原文",
+        entity_ids=[],
         tag_ids=[],
         note="竞争修订",
     )

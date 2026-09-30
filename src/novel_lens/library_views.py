@@ -3,11 +3,20 @@
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, SerializerFunctionWrapHandler, model_serializer
+from pydantic import BaseModel, Field, SerializerFunctionWrapHandler, model_serializer
 
-from novel_lens.asset_contracts import AnalysisTarget, JobStatus
-from novel_lens.contracts import Page, ParagraphOut, ParagraphSpan
-from novel_lens.query_views import CompactAnnotationOut, CompactAnnotationPage
+from novel_lens.asset_contracts import (
+    AnalysisTarget,
+    AnnotationKind,
+    AnnotationLocation,
+    AnnotationStatus,
+    CategorySummary,
+    JobStatus,
+    TagIdentity,
+)
+from novel_lens.contracts import Page, ParagraphOut, ParagraphSpan, SourceRange
+from novel_lens.query_views import CompactAnnotationOut
+from novel_lens.tag_categories import Categories
 
 
 class NamedItem(BaseModel):
@@ -32,6 +41,28 @@ class CompactTag(NamedItem):
     full_name: str
     description: str
     aliases: list[str]
+    categories: Categories = Field(default_factory=list)
+    annotation_count: int | None = None
+
+
+class CompactBrowsedAnnotation(BaseModel):
+    """跨作品结果每条保留归属和人类可读位置；不重复全文说明。"""
+
+    work_id: UUID
+    id: UUID
+    version: int
+    status: AnnotationStatus
+    kind: AnnotationKind
+    title: str
+    scope_note: str
+    source_range_count: int
+    note_preview: str | None
+    note_truncated: bool
+    tags: list[TagIdentity]
+    work_name: str
+    part_name: str
+    section_title: str
+    first_source_range: SourceRange
 
 
 class CompactJob(BaseModel):
@@ -52,11 +83,13 @@ class CompactLibraryPage(BaseModel):
     works: Page[NamedItem] | None = None
     parts: Page[CompactPart] | None = None
     sections: Page[CompactSection] | None = None
-    annotations: CompactAnnotationPage | None = None
+    annotations: Page[CompactBrowsedAnnotation] | None = None
     annotation: CompactAnnotationOut | None = None
     tags: list[CompactTag] | None = None
     tag_page: Page[CompactTag] | None = None
     jobs: Page[CompactJob] | None = None
+    categories: list[CategorySummary] | None = None
+    locations: list[AnnotationLocation] | None = None
 
     @model_serializer(mode="wrap")
     def used_fields(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:

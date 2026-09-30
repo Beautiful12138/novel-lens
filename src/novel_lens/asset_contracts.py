@@ -1,4 +1,4 @@
-"""标注、标签、实体、关系与风格导航的共享契约；保留分析文本、有序范围及历史快照。"""
+"""标注、标签、实体与关系的共享契约；保留分析文本、有序范围及历史快照。"""
 
 from datetime import datetime
 from typing import Annotated, Literal, Self
@@ -7,6 +7,7 @@ from uuid import UUID
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
 from novel_lens.contracts import ListRequest, ReadingFormat, RequestModel, SourceRange
+from novel_lens.tag_categories import Categories, CategoryId
 
 MAX_ASSET_RESULT_BYTES = 1024 * 1024
 Nonblank = Annotated[str, Field(pattern=r"^[^\x00]*[^\s\x00][^\x00]*$")]
@@ -33,6 +34,32 @@ def sorted_aliases(values: list[str]) -> list[str]:
 TagIds = Annotated[list[UUID], AfterValidator(sorted_ids)]
 Aliases = Annotated[list[Alias], AfterValidator(sorted_aliases)]
 AnnotationStatus = Literal["active", "withdrawn"]
+AnnotationKind = Literal["observation", "comparison"]
+
+
+class AnnotationReference(RequestModel):
+    """证据与连续阅读各自定位；包含关系由业务在真实段号上核验。"""
+
+    evidence_range: SourceRange
+    reading_range: SourceRange | None = None
+    role_note: Nonblank
+
+
+class AnnotationContent(RequestModel):
+    """创建、完整修订与准备批次共用的认识内容，不接受旧引用格式。"""
+
+    kind: AnnotationKind
+    title: Alias
+    scope_note: Nonblank
+    note: Nonblank
+    references: list[AnnotationReference] = Field(min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def unique_evidence(self) -> Self:
+        keys = [ref.evidence_range.model_dump_json() for ref in self.references]
+        if len(keys) != len(set(keys)):
+            raise ValueError("请移除重复的证据范围")
+        return self
 
 
 class TagCreate(RequestModel):
@@ -41,6 +68,7 @@ class TagCreate(RequestModel):
     name: Name
     description: Nonblank
     aliases: Aliases = Field(default_factory=list)
+    categories: Categories = Field(default_factory=list)
 
 
 class TagGet(RequestModel):
@@ -55,6 +83,9 @@ class TagUpdate(TagGet):
     name: Name
     description: Nonblank
     aliases: Aliases
+    categories: Categories | None = Field(
+        default=None, description="省略保留；提供时完整替换，[] 清空"
+    )
 
 
 class TagList(ListRequest):
@@ -75,41 +106,25 @@ class TagOut(BaseModel):
     full_name: str
     description: str
     aliases: list[str]
+    categories: Categories = Field(default_factory=list)
     created_at: datetime
 
     version: int
     updated_at: datetime
 
 
-class AnnotationCreate(RequestModel):
+class AnnotationCreate(AnnotationContent):
     request_id: UUID
     work_id: UUID
-    source_ranges: list[SourceRange] = Field(
-        min_length=1, description="同一作品的一处或多处原文范围，按输入顺序保存，单范围不能跨章节"
-    )
     tag_ids: TagIds = Field(default_factory=list, description="复用已有标签 UUID，可为空")
     entity_ids: TagIds = Field(default_factory=list, description="同作品实体 UUID 集合")
-    note: Nonblank | None = Field(
-        default=None, description="可选写法说明，保留输入文本；无需套固定表单，无说明时传 null"
-    )
-
-    @model_validator(mode="after")
-    def unique_ranges(self) -> Self:
-        """拒绝同一标注中完全重复的引用，允许不同范围相交。"""
-        values = [tuple(r.model_dump().values()) for r in self.source_ranges]
-        if len(values) != len(set(values)):
-            raise ValueError("请移除重复的原文范围")
-        return self
 
 
 class AnnotationUpdate(AnnotationCreate):
     annotation_id: UUID
     expected_version: int = Field(ge=1, description="此前读取的当前版本；冲突时重新读取再决定修改")
     tag_ids: TagIds = Field(description="完整替换标签集合，清空时传 []")
-    note: Nonblank | None = Field(description="完整替换说明，清空时显式传 null")
-    entity_ids: TagIds = Field(
-        default_factory=list, description="显式提交时替换实体集合；省略时保留现有关联"
-    )
+    entity_ids: TagIds = Field(description="完整替换实体集合，清空时传 []")
 
 
 class AnnotationGet(RequestModel):
@@ -132,6 +147,7 @@ class AnnotationRead(AnnotationGet):
 
 
 class AnnotationList(ListRequest):
+    kind: AnnotationKind | None = None
     work_id: UUID
     source_range: SourceRange | None = None
     tag_ids: TagIds = Field(default_factory=list)
@@ -140,15 +156,13 @@ class AnnotationList(ListRequest):
     format: ReadingFormat = "compact"
 
 
-class AnnotationOut(BaseModel):
+class AnnotationOut(AnnotationContent):
     """含实体关联和撤回状态的完整标注。"""
 
     model_config = ConfigDict(extra="forbid")
     id: UUID
     work_id: UUID
-    source_ranges: list[SourceRange]
     tag_ids: list[UUID]
-    note: str | None
     version: int
     created_at: datetime
     updated_at: datetime
@@ -169,6 +183,9 @@ class AnnotationSummary(BaseModel):
     """候选页不携带完整 Note 或所有引用；裁剪状态显式返回。"""
 
     id: UUID
+    kind: AnnotationKind
+    title: str
+    scope_note: str
     work_id: UUID
     version: int
     status: AnnotationStatus
@@ -186,17 +203,52 @@ class AnnotationSummary(BaseModel):
 class AnnotationBrowse(ListRequest):
     """用户资产目录：可跨可见作品，章节筛选始终绑定明确作品。"""
 
+    kind: AnnotationKind | None = None
     work_id: UUID | None = None
+    work_ids: TagIds | None = Field(default=None, min_length=1, max_length=20)
+    part_id: UUID | None = None
     section_id: UUID | None = None
+    source_range: SourceRange | None = None
     tag_ids: TagIds = Field(default_factory=list)
+    tag_match: Literal["any", "all"] = "any"
     query: Nonblank | None = Field(default=None, max_length=300)
     status: AnnotationStatus | None = "active"
 
     @model_validator(mode="after")
     def chapter_scope(self) -> Self:
-        if self.section_id is not None and self.work_id is None:
-            raise ValueError("章节筛选必须同时指定作品")
+        if self.work_id is not None and self.work_ids is not None:
+            raise ValueError("work_id 与 work_ids 互斥")
+        if (self.section_id or self.part_id or self.source_range) and self.work_id is None:
+            raise ValueError("分部、章节和原文范围筛选必须同时指定单作品")
+        if self.section_id is not None and self.part_id is not None:
+            raise ValueError("分部与章节筛选互斥")
         return self
+
+
+class TagBrowse(TagList):
+    """共享词表或作品内有效使用的标签；计数始终限定可见作品。"""
+
+    query: Nonblank | None = None
+    work_id: UUID | None = None
+    work_ids: TagIds | None = Field(default=None, min_length=1, max_length=20)
+    category: CategoryId | Literal["unclassified"] | None = None
+
+    @model_validator(mode="after")
+    def selected_scope(self) -> Self:
+        if self.work_id is not None and self.work_ids is not None:
+            raise ValueError("work_id 与 work_ids 互斥")
+        return self
+
+
+class BrowsedTag(TagOut):
+    annotation_count: int
+
+
+class CategorySummary(BaseModel):
+    id: str
+    name: str
+    tag_count: int
+    annotation_count: int
 
 
 class BrowsedAnnotation(AnnotationSummary):
@@ -214,6 +266,8 @@ class AnnotationLocation(SourceRange):
     section_title: str
     start_ordinal: int
     end_ordinal: int
+    reading_start_ordinal: int
+    reading_end_ordinal: int
 
 
 class BrowsedAnnotationDetail(BaseModel):
@@ -406,52 +460,6 @@ class RelationNodePage(BaseModel):
     next_cursor: str | None
 
 
-class StyleGuideEntry(RequestModel):
-    """一项有适用边界的文学判断；证据只保存原文坐标，不复制正文。"""
-
-    title: Alias
-    kind: Literal["baseline", "variation", "exception"]
-    description: Nonblank
-    applicability: Nonblank
-    source_ranges: list[SourceRange] = Field(min_length=1)
-
-    @model_validator(mode="after")
-    def unique_ranges(self) -> Self:
-        """同条目不能重复引用；不同条目可共享证据，重叠范围仍合法。"""
-        values = [tuple(r.model_dump().values()) for r in self.source_ranges]
-        if len(values) != len(set(values)):
-            raise ValueError("请移除条目内重复的原文范围")
-        return self
-
-
-class StyleGuideCreate(RequestModel):
-    """导航由作品唯一定位；scope_note 是分析范围声明，不是进度。"""
-
-    request_id: UUID
-    work_id: UUID
-    scope_note: Nonblank
-    entries: list[StyleGuideEntry] = Field(description="有序完整条目；[] 表示暂无保留结论")
-
-
-class StyleGuideUpdate(StyleGuideCreate):
-    expected_version: int = Field(ge=1, description="读取的当前版本；完整替换范围说明和条目")
-
-
-class StyleGuideGet(RequestModel):
-    work_id: UUID
-
-
-class StyleGuideOut(BaseModel):
-    """当前导航或提交快照；条目顺序仅在该版本内有效，无独立条目 ID。"""
-
-    work_id: UUID
-    scope_note: str
-    entries: list[StyleGuideEntry]
-    version: int
-    created_at: datetime
-    updated_at: datetime
-
-
 # 任务与资产共用写入回执，类型集中定义以解析本模型提交的快照。
 class AnalysisTarget(RequestModel):
     kind: Literal["whole_work", "part", "ranges"]
@@ -501,7 +509,6 @@ class CoverageCounts(BaseModel):
 class Completion(BaseModel):
     """完成时的校准声明和导航版本，后续资产修订不回写历史依据。"""
 
-    style_guide_version: int | None = None
     calibration_note: str
     limitations: str | None
 
@@ -570,7 +577,6 @@ class AnalysisJobUpdate(AnalysisJobModify):
 
 class AnalysisJobComplete(AnalysisJobModify):
     recovery: Recovery
-    style_guide_version: int | None = Field(default=None, ge=1)
     calibration_note: Nonblank
     limitations: Nonblank | None
 
@@ -657,16 +663,6 @@ class RelationSetStatusWrite(RequestModel):
     input: RelationSetStatus
 
 
-class StyleGuideCreateWrite(RequestModel):
-    operation: Literal["style_guide_create"]
-    input: StyleGuideCreate
-
-
-class StyleGuideUpdateWrite(RequestModel):
-    operation: Literal["style_guide_update"]
-    input: StyleGuideUpdate
-
-
 CheckpointWrite = Annotated[
     TagCreateWrite
     | TagUpdateWrite
@@ -677,9 +673,7 @@ CheckpointWrite = Annotated[
     | EntityUpdateWrite
     | RelationCreateWrite
     | RelationUpdateWrite
-    | RelationSetStatusWrite
-    | StyleGuideCreateWrite
-    | StyleGuideUpdateWrite,
+    | RelationSetStatusWrite,
     Field(discriminator="operation"),
 ]
 
@@ -731,8 +725,6 @@ class AssetWriteOut(BaseModel):
         "relation_create",
         "relation_update",
         "relation_set_status",
-        "style_guide_create",
-        "style_guide_update",
         "analysis_job_create",
         "analysis_job_update",
         "analysis_job_complete",
@@ -746,7 +738,6 @@ class AssetWriteOut(BaseModel):
         | AnnotationOut
         | EntityOut
         | RelationSnapshot
-        | StyleGuideOut
         | AnalysisJobOut
         | AnalysisCheckpointOut
     )

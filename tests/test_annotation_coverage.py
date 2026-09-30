@@ -3,9 +3,9 @@
 from pathlib import Path
 from uuid import uuid4
 
+from annotation_fixtures import annotation_fields
 from starlette.testclient import TestClient
 from test_preparation import import_book
-from test_semantic import DeterministicModel
 
 from novel_lens.asset_contracts import AnnotationCreate, AnnotationOut, AnnotationSetStatus
 from novel_lens.assets import AssetService
@@ -18,7 +18,7 @@ from novel_lens.reading import ReadingService
 def test_complete_counts_overlap_and_page_limits(
     database: Database, client: TestClient, tmp_path: Path
 ) -> None:
-    prep = PreparationService(database, 1024 * 1024, DeterministicModel())
+    prep = PreparationService(database, 1024 * 1024)
     book = import_book(prep, tmp_path, "\n".join(f"原文{i}" for i in range(201)))
     other = import_book(prep, tmp_path, "另一作品")
     reading, assets = ReadingService(database), AssetService(database)
@@ -40,7 +40,7 @@ def test_complete_counts_overlap_and_page_limits(
             AnnotationCreate(
                 request_id=uuid4(),
                 work_id=book.work.id,
-                source_ranges=[span(2, 4), span(3, 5)],
+                **annotation_fields([span(2, 4), span(3, 5)]),
                 note="交叠引用属于同一条标注",
             )
         ).result

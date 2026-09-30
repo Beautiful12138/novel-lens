@@ -92,9 +92,6 @@ def test_real_mcp_roundtrip_and_cross_entry_retry(postgres_url: str, tmp_path: P
                 "relation_search",
                 "relation_expand",
                 "relation_set_status",
-                "style_guide_create",
-                "style_guide_get",
-                "style_guide_update",
                 "analysis_job_create",
                 "analysis_job_get",
                 "analysis_job_list",
@@ -275,7 +272,7 @@ def test_discovery_without_database_and_http_guards(tmp_path: Path) -> None:
 
         async def exercise() -> None:
             async with Client(str(rest.base_url).rstrip("/") + "/mcp") as mcp:
-                assert len((await mcp.list_tools()).tools) == 59
+                assert len((await mcp.list_tools()).tools) == 56
                 await call(mcp, "work_list", {}, code="DATABASE_UNAVAILABLE")
                 # 文件可以直接读取，后续重名预检仍需数据库。
                 await call(

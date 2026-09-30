@@ -7,6 +7,7 @@ from pydantic import BaseModel
 
 from novel_lens.asset_contracts import (
     MAX_ASSET_RESULT_BYTES,
+    AnnotationKind,
     AnnotationOut,
     AnnotationStatus,
     AnnotationSummary,
@@ -70,9 +71,20 @@ class CompactAnnotationResults(Page[CompactAnnotationHit]):
     match_kind: Literal["annotation_note"] = "annotation_note"
 
 
+class CompactAnnotationReference(BaseModel):
+    """压缩证据元数据，阅读目标保持可直接传给 source_read 的完整参数。"""
+
+    evidence_range: CompactSourceRange
+    read_target: SourceRange
+    role_note: str
+
+
 class CompactAnnotationSummary(BaseModel):
     id: UUID
     version: int
+    kind: AnnotationKind
+    title: str
+    scope_note: str
     status: AnnotationStatus
     first_source_range: CompactSourceRange
     source_range_count: int
@@ -89,11 +101,14 @@ class CompactAnnotationOut(BaseModel):
     id: UUID
     work_id: UUID
     version: int
+    kind: AnnotationKind
+    title: str
+    scope_note: str
     status: AnnotationStatus
     note: str | None
     tag_ids: list[UUID]
     entity_ids: list[UUID]
-    source_ranges: list[CompactSourceRange]
+    references: list[CompactAnnotationReference]
 
 
 class CompactSemanticHit(BaseModel):
@@ -197,8 +212,17 @@ def annotation_view(
         return bounded_view(value)
     return bounded_view(
         CompactAnnotationOut.model_validate(
-            value.model_dump(exclude={"created_at", "updated_at", "source_ranges"})
-            | {"source_ranges": [compact_range(v) for v in value.source_ranges]}
+            value.model_dump(exclude={"created_at", "updated_at", "references"})
+            | {
+                "references": [
+                    CompactAnnotationReference(
+                        evidence_range=compact_range(v.evidence_range),
+                        read_target=v.reading_range or v.evidence_range,
+                        role_note=v.role_note,
+                    )
+                    for v in value.references
+                ]
+            }
         )
     )
 

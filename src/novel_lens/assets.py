@@ -1,7 +1,7 @@
 """分析资产的事务、定位与查询；不执行文学判断，不修改原文或分析进度。"""
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import nullcontext
 from datetime import datetime
 from hashlib import sha256
@@ -9,7 +9,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel
-from sqlalchemy import Connection, Select, Table, func, literal, or_, select, tuple_
+from sqlalchemy import Connection, Select, Table, func, literal, or_, select, tuple_, union_all
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.engine import RowMapping
 from sqlalchemy.exc import IntegrityError
@@ -17,7 +17,6 @@ from sqlalchemy.exc import IntegrityError
 from novel_lens.asset_contracts import (
     MAX_ASSET_RESULT_BYTES,
     AnalysisCheckpoint,
-    AnalysisJobComplete,
     AnalysisJobCreate,
     AnalysisJobModify,
     AnnotationBrowse,
@@ -33,6 +32,8 @@ from novel_lens.asset_contracts import (
     AssetWriteOut,
     BrowsedAnnotation,
     BrowsedAnnotationDetail,
+    BrowsedTag,
+    CategorySummary,
     EntityCreate,
     EntityGet,
     EntityList,
@@ -51,11 +52,7 @@ from novel_lens.asset_contracts import (
     RelationSnapshot,
     RelationSummary,
     RelationUpdate,
-    StyleGuideCreate,
-    StyleGuideEntry,
-    StyleGuideGet,
-    StyleGuideOut,
-    StyleGuideUpdate,
+    TagBrowse,
     TagCreate,
     TagIdentity,
     TagList,
@@ -63,6 +60,7 @@ from novel_lens.asset_contracts import (
     TagSearch,
     TagUpdate,
 )
+from novel_lens.catalog import part_at
 from novel_lens.contracts import ListRequest, Page, SourceRange
 from novel_lens.cursors import decode_cursor, encode_cursor, ordinal_cursor
 from novel_lens.database import Database
@@ -79,9 +77,6 @@ from novel_lens.schema import (
     relation_tags,
     relations,
     sections,
-    style_guide_entries,
-    style_guide_ranges,
-    style_guides,
     tags,
     works,
 )
@@ -94,6 +89,7 @@ from novel_lens.schema import (
 from novel_lens.schema import (
     asset_write_requests as requests,
 )
+from novel_lens.tag_categories import CATEGORY_NAMES
 
 
 def compact(value: Any) -> str:
@@ -120,7 +116,7 @@ def require_tags(connection: Connection, ids: list[UUID]) -> None:
         raise ServiceError("TAG_NOT_FOUND", "引用的标签不存在", 404)
 
 
-def tag_out(row: RowMapping) -> TagOut:
+def tag_out(row: RowMapping | Mapping[str, Any]) -> TagOut:
     return TagOut.model_validate(dict(row) | {"full_name": f"{row['namespace']}/{row['name']}"})
 
 
@@ -223,6 +219,9 @@ def annotation_out(connection: Connection, row: RowMapping) -> AnnotationOut:
                 ranges.c.section_id,
                 ranges.c.start_paragraph_id,
                 ranges.c.end_paragraph_id,
+                ranges.c.reading_start_paragraph_id,
+                ranges.c.reading_end_paragraph_id,
+                ranges.c.role_note,
             )
             .where(ranges.c.annotation_id == row["id"])
             .order_by(ranges.c.ordinal)
@@ -242,74 +241,24 @@ def annotation_out(connection: Connection, row: RowMapping) -> AnnotationOut:
     return AnnotationOut.model_validate(
         dict(row)
         | {
-            "source_ranges": [dict(r) for r in references],
+            "references": [
+                dict(
+                    evidence_range={key: r[key] for key in SourceRange.model_fields},
+                    reading_range=dict(
+                        work_id=r["work_id"],
+                        section_id=r["section_id"],
+                        start_paragraph_id=r["reading_start_paragraph_id"],
+                        end_paragraph_id=r["reading_end_paragraph_id"],
+                    ),
+                    role_note=r["role_note"],
+                )
+                for r in references
+            ],
             "tag_ids": ids,
             "entity_ids": related_ids(
                 connection, annotation_entities, "annotation_id", "entity_id", row["id"]
             ),
         }
-    )
-
-
-def style_guide_out(connection: Connection, row: RowMapping) -> StyleGuideOut:
-    """在写锁或一致读取快照内组装导航；批量读引用，不加载原文。"""
-    references: dict[int, list[SourceRange]] = {}
-    for ref in connection.execute(
-        select(style_guide_ranges)
-        .where(style_guide_ranges.c.work_id == row["work_id"])
-        .order_by(style_guide_ranges.c.entry_ordinal, style_guide_ranges.c.ordinal)
-    ).mappings():
-        references.setdefault(ref["entry_ordinal"], []).append(
-            SourceRange(**{key: ref[key] for key in SourceRange.model_fields})
-        )
-    entries = [
-        StyleGuideEntry(
-            title=entry["title"],
-            kind=entry["kind"],
-            description=entry["description"],
-            applicability=entry["applicability"],
-            source_ranges=references.get(entry["ordinal"], []),
-        )
-        for entry in connection.execute(
-            select(style_guide_entries)
-            .where(style_guide_entries.c.work_id == row["work_id"])
-            .order_by(style_guide_entries.c.ordinal)
-        ).mappings()
-    ]
-    return StyleGuideOut(**dict(row), entries=entries)
-
-
-def replace_style_guide_entries(connection: Connection, request: StyleGuideCreate) -> None:
-    """调用方持有主记录写锁；整体替换条目及证据，失败由外层事务回滚。"""
-    for entry in request.entries:
-        for ref in entry.source_ranges:
-            range_bounds(connection, request.work_id, ref)
-    connection.execute(
-        style_guide_ranges.delete().where(style_guide_ranges.c.work_id == request.work_id)
-    )
-    connection.execute(
-        style_guide_entries.delete().where(style_guide_entries.c.work_id == request.work_id)
-    )
-    if not request.entries:
-        return
-    connection.execute(
-        style_guide_entries.insert(),
-        [
-            dict(
-                work_id=request.work_id,
-                ordinal=index,
-                **entry.model_dump(exclude={"source_ranges"}),
-            )
-            for index, entry in enumerate(request.entries, 1)
-        ],
-    )
-    connection.execute(
-        style_guide_ranges.insert(),
-        [
-            dict(entry_ordinal=index, ordinal=ordinal, **ref.model_dump())
-            for index, entry in enumerate(request.entries, 1)
-            for ordinal, ref in enumerate(entry.source_ranges, 1)
-        ],
     )
 
 
@@ -348,6 +297,9 @@ def annotation_summary_query() -> Select[Any]:
         annotations.c.id,
         annotations.c.work_id,
         annotations.c.version,
+        annotations.c.kind,
+        annotations.c.title,
+        annotations.c.scope_note,
         annotations.c.status,
         annotations.c.created_at,
         annotations.c.updated_at,
@@ -393,12 +345,6 @@ def page_rows(
 ) -> tuple[list[RowMapping], str | None]:
     """创建顺序游标绑定查询类型和全部过滤条件，分页大小不属于过滤条件。"""
     filters = request.model_dump(mode="json", exclude={"limit", "cursor", "format"})
-    # 空实体过滤保留 0002 游标摘要，非空过滤必须参与范围绑定。
-    if isinstance(request, AnnotationList) and not request.entity_ids:
-        filters.pop("entity_ids")
-    if isinstance(request, AnnotationList) and request.status == "active":
-        # 原有游标继续表示默认有效集合；撤回和全部状态拥有独立过滤摘要。
-        filters.pop("status")
     scope = type(request).__name__ + ":" + sha256(compact(filters).encode()).hexdigest()
     after = decode_cursor(request.cursor, scope)
     if after is not None:
@@ -433,7 +379,6 @@ type WriteRequest = (
     | EntityCreate
     | RelationCreate
     | RelationSetStatus
-    | StyleGuideCreate
     | AnalysisJobCreate
     | AnalysisJobModify
 )
@@ -457,8 +402,6 @@ def lock_write_batch(connection: Connection, request: WriteRequest) -> None:
             identifier = getattr(value, field, None)
             if identifier is not None:
                 resources.append(f"{field}:{identifier}")
-        if isinstance(value, (StyleGuideCreate, AnalysisJobComplete)):
-            resources.append(f"style:{value.work_id}")
     for namespace, names in ((71001, keys), (71002, resources)):
         hashes = {int.from_bytes(sha256(name.encode()).digest()[:4], signed=True) for name in names}
         for key in sorted(hashes):
@@ -487,17 +430,6 @@ class AssetService:
         PostgreSQL 的 ON CONFLICT 等待竞争事务结束；失败事务不消耗请求键。
         """
         inputs = request.model_dump(mode="json", exclude={"request_id"})
-        if isinstance(request, AnalysisCheckpoint):
-            # 子操作省略 entity_ids 的保留语义须参与批次指纹，不能与显式清空等同。
-            for item, payload in zip(request.writes, inputs["writes"], strict=True):
-                if (
-                    isinstance(item.input, AnnotationUpdate)
-                    and "entity_ids" not in item.input.model_fields_set
-                ):
-                    payload["input"].pop("entity_ids")
-        # 省略关联表示保留，与显式空集合的清空操作必须具有不同指纹。
-        if isinstance(request, AnnotationUpdate) and "entity_ids" not in request.model_fields_set:
-            inputs.pop("entity_ids")
         fingerprint = sha256(
             compact(
                 {
@@ -564,81 +496,6 @@ class AssetService:
                 ) from None
             raise
 
-    def create_style_guide(self, request: StyleGuideCreate) -> AssetWriteOut:
-        """作品主键防止异键并发创建多份导航；同键重试由共享写入流程恢复。"""
-
-        def action(connection: Connection) -> StyleGuideOut:
-            work_at(connection, request.work_id)
-            row = (
-                connection.execute(
-                    insert(style_guides)
-                    .values(work_id=request.work_id, scope_note=request.scope_note, version=1)
-                    .on_conflict_do_nothing(index_elements=[style_guides.c.work_id])
-                    .returning(style_guides)
-                )
-                .mappings()
-                .first()
-            )
-            if row is None:
-                raise ServiceError("STYLE_GUIDE_EXISTS", "该作品已有风格导航，请读取后修订", 409)
-            replace_style_guide_entries(connection, request)
-            return style_guide_out(connection, row)
-
-        return self._write(request, "style_guide_create", action)
-
-    def get_style_guide(self, request: StyleGuideGet) -> StyleGuideOut:
-        """跨表读取同一快照；范围说明和条目始终属于同一导航版本。"""
-        with self.database.engine.connect().execution_options(
-            isolation_level="REPEATABLE READ"
-        ) as connection:
-            work_at(connection, request.work_id)
-            row = (
-                connection.execute(
-                    select(style_guides).where(style_guides.c.work_id == request.work_id)
-                )
-                .mappings()
-                .first()
-            )
-            if row is None:
-                raise ServiceError("STYLE_GUIDE_NOT_FOUND", "该作品尚无风格导航", 404)
-            return style_guide_out(connection, row)
-
-    def update_style_guide(self, request: StyleGuideUpdate) -> AssetWriteOut:
-        """主记录锁覆盖版本检查、条目替换和快照；不自动合并文学结论。"""
-
-        def action(connection: Connection) -> StyleGuideOut:
-            work_at(connection, request.work_id)
-            old = (
-                connection.execute(
-                    select(style_guides)
-                    .where(style_guides.c.work_id == request.work_id)
-                    .with_for_update()
-                )
-                .mappings()
-                .first()
-            )
-            if old is None:
-                raise ServiceError("STYLE_GUIDE_NOT_FOUND", "该作品尚无风格导航", 404)
-            check_version(old, request.expected_version)
-            replace_style_guide_entries(connection, request)
-            row = (
-                connection.execute(
-                    style_guides.update()
-                    .where(style_guides.c.work_id == request.work_id)
-                    .values(
-                        scope_note=request.scope_note,
-                        version=old["version"] + 1,
-                        updated_at=func.clock_timestamp(),
-                    )
-                    .returning(style_guides)
-                )
-                .mappings()
-                .one()
-            )
-            return style_guide_out(connection, row)
-
-        return self._write(request, "style_guide_update", action)
-
     def write_result(self, request_id: UUID) -> AssetWriteOut:
         with self.database.engine.connect() as connection:
             payload = connection.execute(
@@ -698,6 +555,11 @@ class AssetService:
                         name=request.name,
                         description=request.description,
                         aliases=request.aliases,
+                        **(
+                            {"categories": request.categories}
+                            if request.categories is not None
+                            else {}
+                        ),
                         version=request.expected_version + 1,
                         updated_at=func.clock_timestamp(),
                     )
@@ -745,6 +607,107 @@ class AssetService:
             rows, cursor = page_rows(connection, tags, query, request)
             return Page(items=[tag_out(row) for row in rows], next_cursor=cursor)
 
+    def browse_tags(self, request: TagBrowse) -> Page[BrowsedTag]:
+        """从有效标注关联计算范围内用量；全库保留未使用词表供分析查旧。"""
+        selected = [request.work_id] if request.work_id else request.work_ids
+        usage = (
+            select(links.c.tag_id, func.count().label("annotation_count"))
+            .join(annotations, annotations.c.id == links.c.annotation_id)
+            .join(works, works.c.id == annotations.c.work_id)
+            .where(annotations.c.status == "active", works.c.visibility == "visible")
+        )
+        if selected:
+            usage = usage.where(annotations.c.work_id.in_(selected))
+        counts = usage.group_by(links.c.tag_id).subquery()
+        query = select(
+            tags, func.coalesce(counts.c.annotation_count, 0).label("annotation_count")
+        ).outerjoin(counts, counts.c.tag_id == tags.c.id)
+        if selected:
+            query = query.where(counts.c.annotation_count > 0)
+        if request.category == "unclassified":
+            query = query.where(tags.c.categories == [])
+        elif request.category:
+            query = query.where(tags.c.categories.contains([request.category]))
+        if request.namespace:
+            query = query.where(tags.c.namespace == request.namespace)
+        if request.query is not None:
+            alias = (
+                func.jsonb_array_elements_text(tags.c.aliases)
+                .table_valued("value")
+                .render_derived(name="alias_values")
+            )
+            pattern = literal_pattern(request.query)
+            query = query.where(
+                or_(
+                    (tags.c.namespace + "/" + tags.c.name)
+                    .collate("default")
+                    .ilike(pattern, escape="\\"),
+                    tags.c.description.ilike(pattern, escape="\\"),
+                    select(literal(1))
+                    .select_from(alias)
+                    .where(alias.c.value.collate("default").ilike(pattern, escape="\\"))
+                    .correlate(tags)
+                    .exists(),
+                )
+            )
+        with self.database.engine.connect().execution_options(
+            isolation_level="REPEATABLE READ"
+        ) as conn:
+            for work_id in selected or []:
+                searchable_work(conn, work_id)
+            rows, cursor = page_rows(conn, tags, query, request)
+            return Page(
+                items=[
+                    BrowsedTag(
+                        **tag_out(
+                            {k: v for k, v in row.items() if k != "annotation_count"}
+                        ).model_dump(),
+                        annotation_count=row["annotation_count"],
+                    )
+                    for row in rows
+                ],
+                next_cursor=cursor,
+            )
+
+    def browse_categories(self, request: TagBrowse) -> list[CategorySummary]:
+        """固定分类统计以有效可见标注为依据，多分类计数各自去重。"""
+        selected = [request.work_id] if request.work_id else request.work_ids
+        statements = []
+        for key, name in {**CATEGORY_NAMES, "unclassified": "未分类"}.items():
+            statement = (
+                select(
+                    literal(key).label("id"),
+                    literal(name).label("name"),
+                    func.count(func.distinct(tags.c.id)).label("tag_count"),
+                    func.count(func.distinct(annotations.c.id)).label("annotation_count"),
+                )
+                .select_from(
+                    tags.join(links, links.c.tag_id == tags.c.id)
+                    .join(annotations, annotations.c.id == links.c.annotation_id)
+                    .join(works, works.c.id == annotations.c.work_id)
+                )
+                .where(
+                    annotations.c.status == "active",
+                    works.c.visibility == "visible",
+                    tags.c.categories == []
+                    if key == "unclassified"
+                    else tags.c.categories.contains([key]),
+                )
+            )
+            if selected:
+                statement = statement.where(annotations.c.work_id.in_(selected))
+            statements.append(statement)
+        with self.database.engine.connect().execution_options(
+            isolation_level="REPEATABLE READ"
+        ) as conn:
+            for work_id in selected or []:
+                searchable_work(conn, work_id)
+            return [
+                CategorySummary.model_validate(row)
+                for row in conn.execute(union_all(*statements)).mappings()
+                if row["tag_count"]
+            ]
+
     def _save_references(
         self,
         connection: Connection,
@@ -757,8 +720,19 @@ class AssetService:
         connection.execute(
             ranges.insert(),
             [
-                dict(value.model_dump(), annotation_id=annotation_id, ordinal=index)
-                for index, value in enumerate(request.source_ranges, 1)
+                dict(
+                    value.evidence_range.model_dump(),
+                    annotation_id=annotation_id,
+                    ordinal=index,
+                    reading_start_paragraph_id=(
+                        value.reading_range or value.evidence_range
+                    ).start_paragraph_id,
+                    reading_end_paragraph_id=(
+                        value.reading_range or value.evidence_range
+                    ).end_paragraph_id,
+                    role_note=value.role_note,
+                )
+                for index, value in enumerate(request.references, 1)
             ],
         )
         if request.tag_ids:
@@ -770,26 +744,27 @@ class AssetService:
                 ],
             )
 
-        # 旧修改不认识 entity_ids；省略时必须保留当前关联，显式 [] 才清空。
-        if not isinstance(request, AnnotationUpdate) or "entity_ids" in request.model_fields_set:
+        connection.execute(
+            annotation_entities.delete().where(annotation_entities.c.annotation_id == annotation_id)
+        )
+        if request.entity_ids:
             connection.execute(
-                annotation_entities.delete().where(
-                    annotation_entities.c.annotation_id == annotation_id
-                )
+                annotation_entities.insert(),
+                [
+                    {"annotation_id": annotation_id, "entity_id": identifier}
+                    for identifier in request.entity_ids
+                ],
             )
-            if request.entity_ids:
-                connection.execute(
-                    annotation_entities.insert(),
-                    [
-                        {"annotation_id": annotation_id, "entity_id": identifier}
-                        for identifier in request.entity_ids
-                    ],
-                )
 
     def _validate_references(self, connection: Connection, request: AnnotationCreate) -> None:
         work_at(connection, request.work_id)
-        for value in request.source_ranges:
-            range_bounds(connection, request.work_id, value)
+        for reference in request.references:
+            evidence = reference.evidence_range
+            reading = reference.reading_range or evidence
+            first, last = range_bounds(connection, request.work_id, evidence)
+            read_first, read_last = range_bounds(connection, request.work_id, reading)
+            if reading.section_id != evidence.section_id or read_first > first or read_last < last:
+                raise ServiceError("INVALID_RANGE", "连续阅读范围须与证据同章并包含证据")
         require_tags(connection, request.tag_ids)
         require_entities(connection, request.work_id, request.entity_ids)
 
@@ -799,7 +774,15 @@ class AssetService:
             row = (
                 connection.execute(
                     annotations.insert()
-                    .values(id=uuid4(), work_id=request.work_id, note=request.note, version=1)
+                    .values(
+                        id=uuid4(),
+                        work_id=request.work_id,
+                        note=request.note,
+                        version=1,
+                        kind=request.kind,
+                        title=request.title,
+                        scope_note=request.scope_note,
+                    )
                     .returning(annotations)
                 )
                 .mappings()
@@ -843,6 +826,9 @@ class AssetService:
                     )
                     .values(
                         note=request.note,
+                        kind=request.kind,
+                        title=request.title,
+                        scope_note=request.scope_note,
                         version=request.expected_version + 1,
                         updated_at=func.clock_timestamp(),
                     )
@@ -859,10 +845,12 @@ class AssetService:
     def get_annotation(self, request: AnnotationGet) -> AnnotationOut:
         # 主记录及全部关联须属于同一快照，避免逐语句快照混入新版本关联。
         with (
-            self.database.engine.connect().execution_options(
+            nullcontext(self.connection)
+            if self.connection is not None
+            else self.database.engine.connect().execution_options(
                 isolation_level="REPEATABLE READ"
             ) as connection,
-            connection.begin(),
+            nullcontext() if self.connection is not None else connection.begin(),
         ):
             row = (
                 connection.execute(
@@ -924,6 +912,8 @@ class AssetService:
     def list_annotations(self, request: AnnotationList) -> Page[AnnotationSummary]:
         """在数据库投影摘要，不把整页完整 Note 或正文加载后再截断。"""
         query = annotation_summary_query().where(annotations.c.work_id == request.work_id)
+        if request.kind is not None:
+            query = query.where(annotations.c.kind == request.kind)
         if request.status is not None:
             query = query.where(annotations.c.status == request.status)
         with (
@@ -1053,6 +1043,7 @@ class AssetService:
             )
             annotation = annotation_out(connection, row)
             start, end = paragraphs.alias("quote_start"), paragraphs.alias("quote_end")
+            read_start, read_end = paragraphs.alias("read_start"), paragraphs.alias("read_end")
             locations = connection.execute(
                 select(
                     ranges.c.work_id,
@@ -1063,10 +1054,14 @@ class AssetService:
                     sections.c.title.label("section_title"),
                     start.c.ordinal.label("start_ordinal"),
                     end.c.ordinal.label("end_ordinal"),
+                    read_start.c.ordinal.label("reading_start_ordinal"),
+                    read_end.c.ordinal.label("reading_end_ordinal"),
                 )
                 .select_from(
                     ranges.join(start, ranges.c.start_paragraph_id == start.c.id)
                     .join(end, ranges.c.end_paragraph_id == end.c.id)
+                    .join(read_start, ranges.c.reading_start_paragraph_id == read_start.c.id)
+                    .join(read_end, ranges.c.reading_end_paragraph_id == read_end.c.id)
                     .join(sections, ranges.c.section_id == sections.c.id)
                     .join(parts, sections.c.part_id == parts.c.id)
                 )
@@ -1111,11 +1106,24 @@ class AssetService:
         )
         if request.work_id is not None:
             query = query.where(annotations.c.work_id == request.work_id)
+        if request.work_ids is not None:
+            query = query.where(annotations.c.work_id.in_(request.work_ids))
+        if request.kind is not None:
+            query = query.where(annotations.c.kind == request.kind)
         if request.status is not None:
             query = query.where(annotations.c.status == request.status)
         if request.query is not None:
             query = query.where(
-                annotations.c.note.ilike(literal_pattern(request.query), escape="\\")
+                or_(
+                    *(
+                        column.ilike(literal_pattern(request.query), escape="\\")
+                        for column in (
+                            annotations.c.note,
+                            annotations.c.title,
+                            annotations.c.scope_note,
+                        )
+                    )
+                )
             )
         if request.section_id is not None:
             # 章节可能位于第二处引用；不能只过滤列表展示的第一处引用。
@@ -1124,15 +1132,21 @@ class AssetService:
                     select(ranges.c.annotation_id).where(ranges.c.section_id == request.section_id)
                 )
             )
-        if request.tag_ids:
+        if request.part_id is not None:
             query = query.where(
                 annotations.c.id.in_(
-                    select(links.c.annotation_id)
-                    .where(links.c.tag_id.in_(request.tag_ids))
-                    .group_by(links.c.annotation_id)
-                    .having(func.count() == len(request.tag_ids))
+                    select(ranges.c.annotation_id)
+                    .join(sections, sections.c.id == ranges.c.section_id)
+                    .where(sections.c.part_id == request.part_id)
                 )
             )
+        if request.tag_ids:
+            matching = select(links.c.annotation_id).where(links.c.tag_id.in_(request.tag_ids))
+            if request.tag_match == "all":
+                matching = matching.group_by(links.c.annotation_id).having(
+                    func.count() == len(request.tag_ids)
+                )
+            query = query.where(annotations.c.id.in_(matching))
         with (
             self.database.engine.connect().execution_options(
                 isolation_level="REPEATABLE READ"
@@ -1143,6 +1157,24 @@ class AssetService:
                 searchable_work(connection, request.work_id)
                 if request.section_id is not None:
                     section_at(connection, request.work_id, request.section_id)
+                if request.part_id is not None:
+                    part_at(connection, request.work_id, request.part_id)
+                if request.source_range is not None:
+                    first, last = range_bounds(connection, request.work_id, request.source_range)
+                    start, end = paragraphs.alias("range_start"), paragraphs.alias("range_end")
+                    overlap = (
+                        select(ranges.c.annotation_id)
+                        .join(start, start.c.id == ranges.c.start_paragraph_id)
+                        .join(end, end.c.id == ranges.c.end_paragraph_id)
+                        .where(
+                            ranges.c.section_id == request.source_range.section_id,
+                            start.c.ordinal <= last,
+                            end.c.ordinal >= first,
+                        )
+                    )
+                    query = query.where(annotations.c.id.in_(overlap))
+            for work_id in request.work_ids or []:
+                searchable_work(connection, work_id)
             require_tags(connection, request.tag_ids)
             rows, cursor = page_rows(connection, annotations, query, request)
             summaries = annotation_summaries(connection, rows)

@@ -6,6 +6,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
+from annotation_fixtures import annotation_fields
 from part_fixtures import import_work
 from sqlalchemy import Connection, select, text
 from sqlalchemy.engine import RowMapping
@@ -71,7 +72,11 @@ def create_annotation(
     assets: AssetService, source: tuple[UUID, list[SourceRange]], **kwargs: Any
 ) -> AnnotationOut:
     result = assets.create_annotation(
-        AnnotationCreate(request_id=uuid4(), work_id=source[0], source_ranges=source[1], **kwargs)
+        AnnotationCreate(
+            request_id=uuid4(),
+            work_id=source[0],
+            **(annotation_fields(source[1]) | {"note": "具体表达观察"} | kwargs),
+        )
     ).result
     assert isinstance(result, AnnotationOut)
     return result
@@ -83,7 +88,11 @@ def revision(value: AnnotationOut, **changes: Any) -> AnnotationUpdate:
         work_id=value.work_id,
         annotation_id=value.id,
         expected_version=value.version,
-        source_ranges=value.source_ranges,
+        references=value.references,
+        kind=value.kind,
+        title=value.title,
+        scope_note=value.scope_note,
+        entity_ids=value.entity_ids,
         tag_ids=value.tag_ids,
         note=value.note,
     )
@@ -129,7 +138,7 @@ def test_annotation_ranges_filters_and_revision(
     page = assets.list_annotations(query)
     assert [v.id for v in page.items] == [value.id]
     summary = page.items[0]
-    assert summary.note_truncated and summary.note_preview == value.note[:200]  # type: ignore[index]
+    assert summary.note_truncated and summary.note_preview == value.note[:200]
     assert summary.source_range_count == 2 and summary.tag_count == 2
     assert assets.get_annotation(AnnotationGet(work_id=source[0], annotation_id=value.id)) == value
     page = assets.list_annotations(AnnotationList(work_id=source[0], limit=1))
@@ -143,9 +152,9 @@ def test_annotation_ranges_filters_and_revision(
     with pytest.raises(ServiceError) as invalid:
         assets.list_annotations(query.model_copy(update={"cursor": page.next_cursor}))
     assert invalid.value.code == "INVALID_CURSOR"
-    cleared = assets.update_annotation(revision(value, note=None, tag_ids=[])).result
+    cleared = assets.update_annotation(revision(value, note="修订后的具体观察", tag_ids=[])).result
     assert isinstance(cleared, AnnotationOut)
-    assert cleared.version == 2 and cleared.note is None and cleared.tag_ids == []
+    assert cleared.version == 2 and cleared.note == "修订后的具体观察" and cleared.tag_ids == []
     assert cleared.created_at == value.created_at
     assert assets.list_annotations(query).items == []
     unknown = AnnotationGet(work_id=uuid4(), annotation_id=value.id)
@@ -182,7 +191,8 @@ def test_invalid_references_leave_no_result(
     request = AnnotationCreate(
         request_id=uuid4(),
         work_id=source[0],
-        source_ranges=[first.model_copy(update=changes)],
+        **annotation_fields([first.model_copy(update=changes)]),
+        note="具体表达观察",
         tag_ids=[uuid4()] if kind == "tag" else [],
     )
     with pytest.raises(ServiceError):
@@ -197,7 +207,9 @@ def test_concurrent_retry_conflicts_and_snapshot_recovery(
     assets: AssetService,
     source: tuple[UUID, list[SourceRange]],
 ) -> None:
-    request = AnnotationCreate(request_id=uuid4(), work_id=source[0], source_ranges=source[1])
+    request = AnnotationCreate(
+        request_id=uuid4(), work_id=source[0], **annotation_fields(source[1]), note="具体表达观察"
+    )
     barrier = Barrier(3)
 
     def submit() -> AssetWriteOut:
@@ -273,7 +285,9 @@ def test_database_failure_rolls_back_entire_revision(
 ) -> None:
     tag = create_tag(assets, uuid4().hex, "独立标签")
     old = create_annotation(assets, source, note="原说明", tag_ids=[tag.id])
-    update = revision(old, note="不应提交", source_ranges=[source[1][1]])
+    update = revision(
+        old, note="不应提交", references=annotation_fields([source[1][1]])["references"]
+    )
     # 使用真实数据库触发器制造写入阶段故障；标注更新、关联替换和请求占键均须回滚。
     event = "UPDATE" if table == "asset_write_requests" else "INSERT"
     with database.engine.begin() as connection:
@@ -295,7 +309,11 @@ def test_database_failure_rolls_back_entire_revision(
         with pytest.raises(DBAPIError):
             assets.create_annotation(
                 AnnotationCreate(
-                    request_id=uuid4(), work_id=source[0], source_ranges=source[1], tag_ids=[tag.id]
+                    request_id=uuid4(),
+                    work_id=source[0],
+                    **annotation_fields(source[1]),
+                    note="具体表达观察",
+                    tag_ids=[tag.id],
                 )
             )
     finally:
@@ -333,7 +351,11 @@ def test_detail_uses_one_snapshot_during_concurrent_update(
         )
         try:
             assert selected.wait(10), "详情未读取到主记录"
-            assets.update_annotation(revision(old, note="第二版", source_ranges=[source[1][1]]))
+            assets.update_annotation(
+                revision(
+                    old, note="第二版", references=annotation_fields([source[1][1]])["references"]
+                )
+            )
         finally:
             changed.set()
         assert future.result(timeout=10) == old

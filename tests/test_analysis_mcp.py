@@ -16,7 +16,7 @@ def test_analysis_tools_restart_and_errors(postgres_url: str, tmp_path: Path) ->
     async def exercise(rest: httpx.Client) -> dict[str, Any]:
         async with Client(str(rest.base_url).rstrip("/") + "/mcp") as mcp:
             tools = {tool.name: tool for tool in (await mcp.list_tools()).tools}
-            assert len(tools) == 59
+            assert len(tools) == 56
             hints = tools["analysis_checkpoint"].annotations
             assert hints and hints.destructive_hint and not hints.read_only_hint
             read_hints = tools["coverage_get"].annotations
@@ -102,24 +102,13 @@ def test_analysis_tools_restart_and_errors(postgres_url: str, tmp_path: Path) ->
             )
             await call(mcp, "analysis_checkpoint", checkpoint, code="INVALID_INPUT")
             checkpoint["outcome_note"] = "private-checkpoint-outcome"
-            checkpoint["writes"] = [
-                dict(
-                    operation="style_guide_create",
-                    input=dict(
-                        request_id=str(uuid4()),
-                        work_id=work_id,
-                        scope_note="仅样本，暂未发现稳定写法",
-                        entries=[],
-                    ),
-                )
-            ]
+            checkpoint["writes"] = []
             receipt = await call(mcp, "analysis_checkpoint", checkpoint)
             assert receipt["result"]["version"] == 4
             complete = key | dict(
                 request_id=str(uuid4()),
                 expected_version=4,
                 recovery=recovery,
-                style_guide_version=1,
                 calibration_note="private-checkpoint-calibration",
                 limitations=None,
             )

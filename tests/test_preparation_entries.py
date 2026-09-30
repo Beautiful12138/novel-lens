@@ -1,13 +1,13 @@
-"""验证准备入口跨协议复用回执及服务生命周期中的自动索引消费。"""
+"""验证准备入口跨协议复用回执，无模型依赖的完成与重启。"""
 
 import asyncio
-import time
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 import httpx
 import pytest
+from annotation_fixtures import annotation_fields
 from conftest import temporary_database
 from mcp import Client
 from mcp.shared.exceptions import MCPError
@@ -36,7 +36,7 @@ def test_preparation_http_mcp_receipt_and_remaining(postgres_url: str, tmp_path:
                 "prepare_batch",
                 "prepare_finish",
                 "prepare_cleanup",
-                "reference_query",
+                "tag_update",
                 "source_read",
             }
             with pytest.raises(MCPError):
@@ -66,7 +66,7 @@ def test_preparation_http_mcp_receipt_and_remaining(postgres_url: str, tmp_path:
                 expected_version=1,
                 source_range=status["remaining"]["items"][0]["source_range"],
                 marks=[],
-                recovery={"next_action": "等待索引"},
+                recovery={"next_action": "完成核对"},
                 outcome_note="已读，无需新增标记",
             )
             saved = rest.post("/preparation/batch", json=batch)
@@ -84,7 +84,6 @@ def test_preparation_http_mcp_receipt_and_remaining(postgres_url: str, tmp_path:
                     recovery={"next_action": "完成"},
                     note="已核对",
                 ),
-                code="PREPARATION_INDEX_PENDING",
             )
             cleaned = await call(
                 mcp,
@@ -97,7 +96,7 @@ def test_preparation_http_mcp_receipt_and_remaining(postgres_url: str, tmp_path:
         asyncio.run(exercise(rest))
 
 
-def test_lifespan_consumes_queue_without_ai_calls(
+def test_lifespan_prepares_and_restarts_without_model_calls(
     postgres_url: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -107,7 +106,7 @@ def test_lifespan_consumes_queue_without_ai_calls(
 
     model = DeterministicModel()
     monkeypatch.setattr(app_module, "EmbeddingClient", lambda path: model)
-    source = tmp_path / "自动索引.txt"
+    source = tmp_path / "准备样例.txt"
     source.write_text("分部：卷一\n标题：雨夜\n雨声盖过了脚步声。", encoding="utf-8")
     with temporary_database(postgres_url) as isolated:
         settings = Settings.model_construct(
@@ -127,21 +126,15 @@ def test_lifespan_consumes_queue_without_ai_calls(
                 source_range=initial["remaining"]["items"][0]["source_range"],
                 marks=[
                     dict(
-                        source_ranges=[initial["remaining"]["items"][0]["source_range"]],
+                        **annotation_fields([initial["remaining"]["items"][0]["source_range"]]),
                         note="声音掩盖行动",
                     )
                 ],
-                recovery={"next_action": "等待索引"},
+                recovery={"next_action": "完成核对"},
                 outcome_note="原文已核对",
             )
             assert client.post("/preparation/batch", json=batch).status_code == 200
-            deadline = time.monotonic() + 20
-            while True:
-                state = client.post("/preparation/status", json=status_request).json()
-                if state["indexes"]["state"] == "ready":
-                    break
-                assert time.monotonic() < deadline, state
-                time.sleep(0.05)
+            state = client.post("/preparation/status", json=status_request).json()
             assert not state["work_ready"]
             finished = client.post(
                 "/preparation/finish",
@@ -155,8 +148,8 @@ def test_lifespan_consumes_queue_without_ai_calls(
             )
             assert finished.status_code == 200, finished.text
         # 重启服务读取持久状态，不重复计算已同步的向量，不创建 AI 任务。
-        calls = len(model.calls)
+        assert model.calls == []
         with TestClient(create_app(settings)) as restarted:
             state = restarted.post("/preparation/status", json=status_request).json()
             assert state["work_ready"] and state["job"]["status"] == "completed"
-        assert len(model.calls) == calls
+        assert model.calls == []

@@ -18,6 +18,7 @@ from novel_lens.asset_contracts import (
     AnalysisJobOut,
     AnalysisTarget,
     AnnotationCreate,
+    AnnotationGet,
     AnnotationOut,
     AnnotationSetStatus,
     AnnotationUpdate,
@@ -28,7 +29,6 @@ from novel_lens.assets import AssetService, compact
 from novel_lens.catalog import CatalogService, lock_work
 from novel_lens.contracts import PartOut, WorkCreate, WorkOut
 from novel_lens.database import Database
-from novel_lens.embedding import EmbeddingClient
 from novel_lens.errors import ServiceError
 from novel_lens.importing import ImportService
 from novel_lens.local_files import read_source
@@ -47,7 +47,6 @@ from novel_lens.reference_contracts import (
     PrepareImport,
     PrepareStatus,
 )
-from novel_lens.reference_index import index_state
 from novel_lens.schema import analysis_jobs, catalog_requests, parts, tags
 from novel_lens.work_management import WorkManagementService
 
@@ -55,14 +54,13 @@ from novel_lens.work_management import WorkManagementService
 class PreparationService:
     """复用目录、标注与任务规则；不生成文学判断，也不驱动外部 AI。"""
 
-    def __init__(self, database: Database, maximum: int, model: EmbeddingClient) -> None:
+    def __init__(self, database: Database, maximum: int) -> None:
         self.database = database
         self.maximum = maximum
-        self.model = model
         self.catalog = CatalogService(database)
 
     def import_file(self, request: PrepareImport) -> PreparedImport:
-        """读取单份规范 TXT；新建作品、正文、任务与索引待办共用一次事务。
+        """读取单份规范 TXT；新建作品、正文与任务共用一次事务。
 
         解析失败不会留下空作品。追加同一来源复用分部和其准备任务；
         回执是提交快照，读取最新进度须使用 status。输入文件始终只读。
@@ -112,23 +110,41 @@ class PreparationService:
                 part = imported.part
             else:
                 part = PartOut.model_validate(existing)
-            job = (
-                AnalysisService(self.database, conn)
-                .create(
-                    AnalysisJobCreate(
-                        request_id=uuid5(part.id, "preparation-job"),
-                        work_id=work_id,
-                        title="原文阅读与标记",
-                        goal="阅读全部目标原文，保存帮助创作召回的必要标记",
-                        target=AnalysisTarget(kind="part", part_id=part.id),
-                        recovery=Recovery(
-                            next_action="读取准备状态中的剩余范围，阅读原文后分批保存标记"
-                        ),
-                    )
+            # 同源分部复用当前任务，不依赖可能已清理的历史创建回执。
+            # 分部导入锁保证并发准备不会各自创建任务。
+            existing_job = conn.execute(
+                select(analysis_jobs.c.id)
+                .where(
+                    analysis_jobs.c.work_id == work_id,
+                    analysis_jobs.c.part_id == part.id,
+                    analysis_jobs.c.target_kind == "part",
                 )
-                .result
-            )
-            assert isinstance(job, AnalysisJobOut)
+                .order_by(analysis_jobs.c.created_at, analysis_jobs.c.id)
+                .limit(1)
+            ).scalar_one_or_none()
+            if existing_job is not None:
+                job = AnalysisService(self.database, conn).get(
+                    AnalysisJobGet(work_id=work_id, job_id=existing_job)
+                )
+            else:
+                created_job = (
+                    AnalysisService(self.database, conn)
+                    .create(
+                        AnalysisJobCreate(
+                            request_id=uuid5(part.id, "preparation-job"),
+                            work_id=work_id,
+                            title="原文阅读与标记",
+                            goal="阅读全部目标原文，保存帮助创作召回的必要标记",
+                            target=AnalysisTarget(kind="part", part_id=part.id),
+                            recovery=Recovery(
+                                next_action="读取准备状态中的剩余范围，阅读原文后分批保存标记"
+                            ),
+                        )
+                    )
+                    .result
+                )
+                assert isinstance(created_job, AnalysisJobOut)
+                job = created_job
             result = PreparedImport(
                 request_id=request.request_id, work=work_at(conn, work_id), part=part, job=job
             )
@@ -189,7 +205,8 @@ class PreparationService:
                         namespace=tag.namespace,
                         name=tag.name,
                         description=tag.description,
-                        aliases=[],
+                        aliases=tag.aliases,
+                        categories=tag.categories,
                     )
                     .on_conflict_do_nothing(index_elements=[tags.c.namespace, tags.c.name])
                     .returning(tags.c.id)
@@ -214,7 +231,11 @@ class PreparationService:
                 values = dict(
                     request_id=uuid5(request.request_id, f"mark:{ordinal}"),
                     work_id=request.work_id,
-                    source_ranges=mark.source_ranges,
+                    references=mark.references,
+                    kind=mark.kind,
+                    title=mark.title,
+                    scope_note=mark.scope_note,
+                    entity_ids=[],
                     note=mark.note,
                     tag_ids=[tag_ids[(t.namespace, t.name)] for t in mark.tags],
                 )
@@ -223,6 +244,9 @@ class PreparationService:
                         AnnotationCreate.model_validate(values)
                     ).result
                 else:
+                    values["entity_ids"] = writer.get_annotation(
+                        AnnotationGet(work_id=request.work_id, annotation_id=mark.annotation_id)
+                    ).entity_ids
                     annotation = writer.update_annotation(
                         AnnotationUpdate.model_validate(
                             values
@@ -269,12 +293,11 @@ class PreparationService:
         )
 
     def status(self, request: PrepareStatus) -> PreparedStatus:
-        """在同一快照返回剩余阅读范围、当前任务版本和索引覆盖；不推进任务。"""
+        """在同一快照返回剩余阅读范围、当前任务版本；不推进任务。"""
         with self.database.engine.connect().execution_options(
             isolation_level="REPEATABLE READ"
         ) as conn:
             analysis = AnalysisService(self.database, conn)
-            indexes = index_state(conn, request.work_id, self.model.contract_id)
             unfinished_parts = conn.execute(
                 text("""
                 SELECT count(*) FROM parts p WHERE p.work_id=:w AND NOT EXISTS (
@@ -289,12 +312,11 @@ class PreparationService:
                 remaining=analysis.coverage(
                     CoverageGet(**request.model_dump(), remaining_only=True)
                 ),
-                indexes=indexes,
-                work_ready=indexes.state == "ready" and unfinished_parts == 0,
+                work_ready=unfinished_parts == 0,
             )
 
     def finish(self, request: PrepareFinish) -> PreparedFinish:
-        """锁定任务后核验索引与阅读覆盖；未完成时整次拒绝，成功回执可重放。"""
+        """锁定任务后核验阅读覆盖；未完成时整次拒绝，成功回执可重放。"""
         completion = AnalysisJobComplete(
             request_id=uuid5(request.request_id, "complete"),
             work_id=request.work_id,
@@ -312,18 +334,6 @@ class PreparationService:
 
             lock_write_batch(conn, completion)
             locked_job(conn, completion, running=True)
-            conn.execute(
-                text("SELECT revision FROM reference_queue WHERE work_id=:w FOR UPDATE"),
-                {"w": request.work_id},
-            )
-            state = index_state(conn, request.work_id, self.model.contract_id)
-            if state.state != "ready":
-                raise ServiceError(
-                    "PREPARATION_INDEX_PENDING",
-                    "原文或标记索引尚未就绪",
-                    409,
-                    state.model_dump(mode="json"),
-                )
             job = AnalysisService(self.database, conn).complete(completion).result
             assert isinstance(job, AnalysisJobOut)
             return request.work_id, PreparedFinish(

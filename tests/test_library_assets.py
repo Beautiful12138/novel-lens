@@ -7,12 +7,12 @@ from uuid import uuid4
 
 import httpx
 import pytest
+from annotation_fixtures import annotation_fields
 from mcp import Client
 from pydantic import ValidationError
 from test_live_http import running_server
 from test_mcp_http import call
 from test_preparation import batch_for, import_book
-from test_semantic import DeterministicModel
 
 from novel_lens.asset_contracts import (
     AnnotationCreate,
@@ -32,9 +32,8 @@ from novel_lens.reference_contracts import LibraryBrowse
 
 
 def test_library_tag_lookup_and_annotation_filters(database: Database, tmp_path: Path) -> None:
-    model = DeterministicModel()
-    preparation = PreparationService(database, 1024 * 1024, model)
-    library, assets = LibraryService(database, model), AssetService(database)
+    preparation = PreparationService(database, 1024 * 1024)
+    library, assets = LibraryService(database), AssetService(database)
     book = import_book(preparation, tmp_path, "第一处证据。\n第二处证据。")
     other = import_book(preparation, tmp_path, "其他作品的证据。")
     span = batch_for(preparation, book).source_range
@@ -91,7 +90,7 @@ def test_library_tag_lookup_and_annotation_filters(database: Database, tmp_path:
             AnnotationCreate(
                 request_id=uuid4(),
                 work_id=scope.work_id,
-                source_ranges=refs,
+                **annotation_fields(refs),
                 tag_ids=ids,
                 note="有依据的观察",
             )
@@ -107,7 +106,9 @@ def test_library_tag_lookup_and_annotation_filters(database: Database, tmp_path:
             status="withdrawn",
         )
     )
-    request = LibraryBrowse(view="annotations", work_id=book.work.id, tag_ids=[first.id], limit=1)
+    request = LibraryBrowse(
+        view="annotations", work_id=book.work.id, tag_ids=[first.id], limit=1, status=None
+    )
     results = library.browse(request).annotations
     assert results is not None and results.next_cursor
     assert results.items[0].id == marked[0].id
@@ -182,7 +183,7 @@ def test_library_tag_lookup_and_annotation_filters(database: Database, tmp_path:
 @pytest.mark.parametrize(
     "payload",
     [
-        {"view": "tags", "work_id": str(uuid4())},
+        {"view": "tags", "work_id": str(uuid4()), "work_ids": [str(uuid4())]},
         {"view": "tags", "query": "  "},
         {"view": "tags", "status": None},
         {"view": "works", "tag_ids": []},
@@ -236,7 +237,7 @@ def test_default_mcp_asset_lookup_matches_http(postgres_url: str, tmp_path: Path
                     source_range=scope,
                     marks=[
                         dict(
-                            source_ranges=[scope],
+                            **annotation_fields([scope]),
                             note="行动承接",
                             tags=[
                                 dict(namespace=namespace, name="动作", description="具体行动的接续")
@@ -274,7 +275,7 @@ def test_default_mcp_asset_lookup_matches_http(postgres_url: str, tmp_path: Path
                     format="full",
                 ),
             )
-            assert detail["annotation"]["source_ranges"] == [scope]
+            assert [r["evidence_range"] for r in detail["annotation"]["references"]] == [scope]
             assert detail["tags"][0]["description"] == "具体行动的接续"
 
     with running_server(postgres_url, tmp_path, "library-assets", mcp_profile="business") as rest:

@@ -5,6 +5,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import httpx
+from annotation_fixtures import annotation_fields
 from mcp import Client
 from part_fixtures import http_import
 from test_live_http import running_server
@@ -62,7 +63,7 @@ def test_corrections_mcp(postgres_url: str, tmp_path: Path) -> None:
                     dict(
                         request_id=str(uuid4()),
                         work_id=work,
-                        source_ranges=[ref],
+                        **annotation_fields([ref]),
                         tag_ids=[tag["id"]],
                         note="纠错测试说明",
                     ),
@@ -74,7 +75,9 @@ def test_corrections_mcp(postgres_url: str, tmp_path: Path) -> None:
                 request_id=str(uuid4()), expected_version=1, status="withdrawn"
             )
             withdrawn = (await call(mcp, "annotation_set_status", revoke))["result"]
-            assert withdrawn["version"] == 2 and withdrawn["source_ranges"] == [ref]
+            assert withdrawn["version"] == 2 and [
+                r["evidence_range"] for r in withdrawn["references"]
+            ] == [ref]
             assert (await call(mcp, "annotation_set_status", revoke))["replayed"]
             assert not (await call(mcp, "annotation_list", {"work_id": work}))["items"]
             q = {"work_id": work, "terms": ["纠错"]}
@@ -92,9 +95,10 @@ def test_corrections_mcp(postgres_url: str, tmp_path: Path) -> None:
                     | dict(
                         request_id=str(uuid4()),
                         expected_version=2,
-                        source_ranges=[ref],
+                        **annotation_fields([ref]),
                         tag_ids=[tag["id"]],
                         note="纠错修订说明",
+                        entity_ids=[],
                     ),
                 )
             )["result"]

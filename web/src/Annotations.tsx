@@ -19,6 +19,8 @@ function Reference({
   location,
   active,
   onOpen,
+  onEvidence,
+  roleNote,
 }: {
   workId: string;
   span: Span;
@@ -26,6 +28,8 @@ function Reference({
   location: ReferenceLocation;
   active: boolean;
   onOpen: () => void;
+  onEvidence: () => void;
+  roleNote: string;
 }) {
   const [preview, setPreview] = useState(false);
 
@@ -37,8 +41,12 @@ function Reference({
           {location.part_name} · {location.section_title}
         </strong>
         <span>
-          第 {location.start_ordinal}–{location.end_ordinal} 段 · 打开原文
+          第 {location.reading_start_ordinal}–{location.reading_end_ordinal} 段 · 连续阅读
         </span>
+      </button>
+      <p>{roleNote}</p>
+      <button className="preview-toggle" onClick={onEvidence}>
+        定位证据 · 第 {location.start_ordinal}–{location.end_ordinal} 段
       </button>
       <button
         className="preview-toggle"
@@ -121,7 +129,12 @@ export function MarkDetails({
             {detail.data.annotation.status === 'withdrawn' && (
               <p className="withdrawn">此标注已撤回，不参与默认有效标注召回。</p>
             )}
-            <p className="note">{detail.data.annotation.note || '此标注没有说明文字。'}</p>
+            <p className="hint">
+              {detail.data.annotation.kind === 'comparison' ? '作品认识' : '具体观察'}
+            </p>
+            <h3>{detail.data.annotation.title}</h3>
+            <p className="hint">适用范围：{detail.data.annotation.scope_note}</p>
+            <p className="note">{detail.data.annotation.note}</p>
             <div className="tags">
               {detail.data.tags.map((tag) => (
                 <span key={tag.id} title={tag.description}>
@@ -129,18 +142,20 @@ export function MarkDetails({
                 </span>
               ))}
             </div>
-            <h3>原文依据 · {detail.data.annotation.source_ranges.length} 处</h3>
+            <h3>原文依据 · {detail.data.annotation.references.length} 处</h3>
             <p className="hint">分别打开每处引用，结合上下文阅读。</p>
             <ol className="references">
-              {detail.data.annotation.source_ranges.map((span, index) => (
+              {detail.data.annotation.references.map((reference, index) => (
                 <Reference
-                  key={`${span.section_id}:${span.start_paragraph_id}:${index}`}
+                  key={`${reference.evidence_range.section_id}:${index}`}
                   workId={workId}
-                  span={span}
+                  span={reference.reading_range}
                   index={index}
                   location={detail.data!.locations[index]}
-                  active={JSON.stringify(active) === JSON.stringify(span)}
-                  onOpen={() => onOpen(span)}
+                  active={JSON.stringify(active) === JSON.stringify(reference.reading_range)}
+                  onOpen={() => onOpen(reference.reading_range)}
+                  onEvidence={() => onOpen(reference.evidence_range)}
+                  roleNote={reference.role_note}
                 />
               ))}
             </ol>
@@ -197,6 +212,7 @@ function MarkList({
         )}
         {marks.data?.annotations.items.map((mark) => (
           <button className="mark" key={mark.id} onClick={() => onSelect(mark.id)}>
+            <strong>{mark.title}</strong>
             <span className="hint">{mark.source_range_count} 处原文依据</span>
             <p>
               {mark.note_preview || '未填写说明'}

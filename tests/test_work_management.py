@@ -8,6 +8,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
+from annotation_fixtures import annotation_fields
 from mcp import Client
 from part_fixtures import http_file, http_import
 from sqlalchemy import Connection, event, text
@@ -19,7 +20,6 @@ from test_live_http import running_server
 from test_mcp_http import call
 from test_semantic import DeterministicModel, build, imported
 from test_semantic_annotations import references
-from test_style_guides import guide_request
 
 from novel_lens.analysis import AnalysisService
 from novel_lens.asset_contracts import AnnotationCreate, AnnotationOut, CoverageMark
@@ -61,7 +61,6 @@ def test_http_delete_all_assets_and_reimport(database: Database, client: TestCli
     person = entity(assets, work)
     create_annotation(assets, (work, refs), tag_ids=[tag.id], entity_ids=[person.id])
     assets.create_relation(relation_request((work, refs), tag_ids=[tag.id], entity_ids=[person.id]))
-    assets.create_style_guide(guide_request((work, refs)))
     analysis = AnalysisService(database)
     job = create_job(analysis, (work, refs))
     analysis.mark(
@@ -196,7 +195,10 @@ def test_write_finishes_before_delete_without_orphan_receipt(database: Database)
     work = imported(database, "标题：甲\n并发原文")
     assets = AssetService(database)
     request = AnnotationCreate(
-        request_id=uuid4(), work_id=work, source_ranges=references(database, work)
+        request_id=uuid4(),
+        work_id=work,
+        **annotation_fields(references(database, work)),
+        note="具体表达观察",
     )
     ready, release, deleting = Event(), Event(), Event()
 

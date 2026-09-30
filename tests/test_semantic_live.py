@@ -7,6 +7,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from annotation_fixtures import annotation_fields
 from mcp import Client
 from part_fixtures import http_file, http_import
 from test_live_http import running_server
@@ -60,14 +61,16 @@ def test_real_model_http_mcp_restart(postgres_url: str, tmp_path: Path, kind: st
                             "work_id": work,
                             "request_id": str(uuid4()),
                             "note": "保留标注说明，不作为向量输入",
-                            "source_ranges": [
-                                {
-                                    "work_id": work,
-                                    "section_id": section["id"],
-                                    "start_paragraph_id": paragraphs[0]["id"],
-                                    "end_paragraph_id": paragraphs[-1]["id"],
-                                }
-                            ],
+                            **annotation_fields(
+                                [
+                                    {
+                                        "work_id": work,
+                                        "section_id": section["id"],
+                                        "start_paragraph_id": paragraphs[0]["id"],
+                                        "end_paragraph_id": paragraphs[-1]["id"],
+                                    }
+                                ]
+                            ),
                         },
                     )
 
@@ -133,7 +136,7 @@ def test_real_model_http_mcp_restart(postgres_url: str, tmp_path: Path, kind: st
                             {"work_id": work, "annotation_id": actual["items"][0]["annotation_id"]},
                         )
                         assert asset["version"] == actual["items"][0]["annotation_version"]
-                        assert asset["source_ranges"][0] == ref
+                        assert asset["references"][0]["evidence_range"] == ref
                     # 两次协议调用重新推理；允许后端数值差异，同时保留上面的
                     # 明确语义样例首位引用校验，不能只靠宽松分数判断检索成功。
                     assert actual["items"][0]["score"] == pytest.approx(

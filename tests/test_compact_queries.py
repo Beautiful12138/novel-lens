@@ -6,6 +6,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import httpx
+from annotation_fixtures import annotation_fields
 from mcp import Client
 from part_fixtures import http_file, http_import
 from test_live_http import running_server
@@ -48,7 +49,7 @@ def test_compact_queries(postgres_url: str, tmp_path: Path) -> None:
                     {
                         "request_id": str(uuid4()),
                         "work_id": work,
-                        "source_ranges": refs,
+                        **annotation_fields(refs),
                         "note": note,
                     },
                 )
@@ -62,7 +63,9 @@ def test_compact_queries(postgres_url: str, tmp_path: Path) -> None:
             whole = await call(mcp, "annotation_get", identify | {"format": "full"})
             assert whole == created[0]
             assert detail["note"] == note
-            assert [{"work_id": detail["work_id"]} | r for r in detail["source_ranges"]] == refs
+            assert [
+                {"work_id": detail["work_id"]} | r["evidence_range"] for r in detail["references"]
+            ] == refs
             assert "created_at" not in detail and "updated_at" not in detail
             for field in ["id", "work_id", "version", "status", "tag_ids", "entity_ids"]:
                 assert detail[field] == whole[field]
@@ -121,7 +124,7 @@ def test_compact_queries(postgres_url: str, tmp_path: Path) -> None:
                     "status": "withdrawn",
                 },
             )
-            assert withdrawn["result"]["source_ranges"] == refs
+            assert [r["evidence_range"] for r in withdrawn["result"]["references"]] == refs
             assert (await call(mcp, "annotation_get", identify))["status"] == "withdrawn"
             assert [
                 v["annotation_id"] for v in (await call(mcp, "annotation_search", query))["items"]

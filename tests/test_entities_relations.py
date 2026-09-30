@@ -6,6 +6,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
+from annotation_fixtures import annotation_fields
 from part_fixtures import import_work
 from sqlalchemy import Connection, select, text
 from sqlalchemy.engine import RowMapping
@@ -183,7 +184,7 @@ def test_entity_identity_search_and_annotation_links(
     ).result
     assert isinstance(changed, EntityOut) and changed.version == 2
     assert assets.get_annotation(AnnotationGet(work_id=work_id, annotation_id=a.id)) == a
-    kept = assets.update_annotation(revision(a, note="旧客户端修改")).result
+    kept = assets.update_annotation(revision(a, note="显式保留已有实体后修改说明")).result
     assert isinstance(kept, AnnotationOut) and kept.entity_ids == a.entity_ids
     failed = revision(kept, entity_ids=[foreign.id])
     with pytest.raises(ServiceError) as invalid:
@@ -410,7 +411,10 @@ def test_new_asset_concurrency_and_request_recovery(
     with pytest.raises(ServiceError) as conflict:
         assets.create_annotation(
             AnnotationCreate(
-                request_id=request.request_id, work_id=source[0], source_ranges=source[1]
+                request_id=request.request_id,
+                work_id=source[0],
+                **annotation_fields(source[1]),
+                note="具体表达观察",
             )
         )
     assert conflict.value.code == "REQUEST_CONFLICT"

@@ -6,6 +6,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
+from annotation_fixtures import annotation_fields
 from part_fixtures import import_work
 from pydantic import ValidationError
 from sqlalchemy import text
@@ -34,7 +35,6 @@ from novel_lens.asset_contracts import (
     EntityOut,
     Recovery,
     RelationSnapshot,
-    StyleGuideCreate,
     TagCreate,
 )
 from novel_lens.assets import AssetService
@@ -207,7 +207,6 @@ def test_pause_complete_reopen_and_immutable_snapshots(
             **mutate(
                 j,
                 recovery=recovery(),
-                style_guide_version=1,
                 calibration_note="核对样本常态与例外",
                 limitations=None,
             )
@@ -226,11 +225,6 @@ def test_pause_complete_reopen_and_immutable_snapshots(
     service.update(AnalysisJobUpdate(**mutate(job, status="running", recovery=recovery())))
     job = service.get(AnalysisJobGet(**key(job)))
     job = checkpoint(service, job, source[1][0])
-    expect("STYLE_GUIDE_NOT_FOUND", lambda: service.complete(completion(job)))
-    service.assets.create_style_guide(
-        StyleGuideCreate(request_id=uuid4(), work_id=source[0], scope_note="仅样本范围", entries=[])
-    )
-    expect("VERSION_CONFLICT", lambda: service.complete(completion(job, style_guide_version=2)))
     request = completion(
         job,
         recovery=recovery(
@@ -243,7 +237,7 @@ def test_pause_complete_reopen_and_immutable_snapshots(
     )
     done = service.complete(request)
     job = service.get(AnalysisJobGet(**key(job)))
-    assert job.status == "completed" and job.completion and job.completion.style_guide_version == 1
+    assert job.status == "completed" and job.completion
     expect(
         "JOB_STATE_CONFLICT",
         lambda: service.update(
@@ -267,11 +261,17 @@ def test_checkpoint_rollback_replay_and_scope(
     service: AnalysisService, source: tuple[UUID, list[SourceRange]]
 ) -> None:
     job = create(service, source)
-    old = AnnotationCreate(request_id=uuid4(), work_id=source[0], source_ranges=source[1])
+    old = AnnotationCreate(
+        request_id=uuid4(), work_id=source[0], **annotation_fields(source[1]), note="具体表达观察"
+    )
     old_result = service.assets.create_annotation(old)
     new = TagCreate(request_id=uuid4(), namespace=uuid4().hex, name="批次", description="定义")
     bad = AnnotationCreate(
-        request_id=uuid4(), work_id=source[0], source_ranges=source[1], tag_ids=[uuid4()]
+        request_id=uuid4(),
+        work_id=source[0],
+        **annotation_fields(source[1]),
+        note="具体表达观察",
+        tag_ids=[uuid4()],
     )
     writes = [
         dict(operation="annotation_create", input=old),
@@ -312,7 +312,7 @@ def test_checkpoint_rollback_replay_and_scope(
     )
 
 
-def test_checkpoint_all_asset_operations_and_omitted_entity_semantics(
+def test_checkpoint_all_asset_operations_and_explicit_entities(
     service: AnalysisService, source: tuple[UUID, list[SourceRange]]
 ) -> None:
     assets = service.assets
@@ -321,7 +321,11 @@ def test_checkpoint_all_asset_operations_and_omitted_entity_semantics(
     ).result
     assert isinstance(identity, EntityOut)
     annotation_request = AnnotationCreate(
-        request_id=uuid4(), work_id=source[0], source_ranges=source[1], entity_ids=[identity.id]
+        request_id=uuid4(),
+        work_id=source[0],
+        **annotation_fields(source[1]),
+        note="具体表达观察",
+        entity_ids=[identity.id],
     )
     annotation = assets.create_annotation(annotation_request).result
     assert isinstance(annotation, AnnotationOut)
@@ -334,7 +338,8 @@ def test_checkpoint_all_asset_operations_and_omitted_entity_semantics(
         work_id=source[0],
         annotation_id=annotation.id,
         expected_version=1,
-        source_ranges=source[1],
+        **annotation_fields(source[1]),
+        entity_ids=[identity.id],
         note="保留实体关联",
         tag_ids=[],
     )
@@ -373,20 +378,6 @@ def test_checkpoint_all_asset_operations_and_omitted_entity_semantics(
                 relation_id=relation.id,
                 expected_version=2,
                 status="withdrawn",
-            ),
-        ),
-        dict(
-            operation="style_guide_create",
-            input=dict(request_id=uuid4(), work_id=source[0], scope_note="样本", entries=[]),
-        ),
-        dict(
-            operation="style_guide_update",
-            input=dict(
-                request_id=uuid4(),
-                work_id=source[0],
-                expected_version=1,
-                scope_note="样本校准",
-                entries=[],
             ),
         ),
     ]
@@ -591,7 +582,8 @@ def test_cross_batch_entity_foreign_keys_do_not_deadlock(
                         input=dict(
                             request_id=uuid4(),
                             work_id=source[0],
-                            source_ranges=source[1],
+                            **annotation_fields(source[1]),
+                            note="具体表达观察",
                             entity_ids=[names[1 - i].id],
                         ),
                     ),
@@ -626,9 +618,6 @@ def test_checkpoint_competes_with_other_job_mutations(
 ) -> None:
     job = create(service, source, target=dict(kind="ranges", source_ranges=[source[1][0]]))
     job = checkpoint(service, job, source[1][0])
-    service.assets.create_style_guide(
-        StyleGuideCreate(request_id=uuid4(), work_id=source[0], scope_note="样本", entries=[])
-    )
     batch = AnalysisCheckpoint(
         **mutate(
             job, source_range=source[1][0], writes=[], outcome_note="再次核对", recovery=recovery()
@@ -651,7 +640,6 @@ def test_checkpoint_competes_with_other_job_mutations(
                         **mutate(
                             job,
                             recovery=recovery(),
-                            style_guide_version=1,
                             calibration_note="校准",
                             limitations=None,
                         )

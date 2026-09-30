@@ -6,6 +6,7 @@ from typing import Any
 from uuid import uuid4
 
 import httpx
+from annotation_fixtures import annotation_fields
 from mcp import Client
 from part_fixtures import http_file, mcp_import
 from test_live_http import running_server
@@ -22,7 +23,7 @@ def test_entity_relation_tools_and_restart(postgres_url: str, tmp_path: Path) ->
     async def exercise(rest: httpx.Client) -> dict[str, Any]:
         async with Client(str(rest.base_url).rstrip("/") + "/mcp") as mcp:
             listing = (await mcp.list_tools()).tools
-            assert len(listing) == 59
+            assert len(listing) == 56
             by_name = {t.name: t for t in listing}
             assert by_name["relation_set_status"].annotations.destructive_hint  # type: ignore[union-attr]
             work = (await mcp_import(mcp, {"request_id": str(uuid4()), "file_path": str(novel)}))[
@@ -89,7 +90,8 @@ def test_entity_relation_tools_and_restart(postgres_url: str, tmp_path: Path) ->
             create_annotation = dict(
                 request_id=str(uuid4()),
                 work_id=work_id,
-                source_ranges=[ranges[0]],
+                **annotation_fields([ranges[0]]),
+                note="具体表达观察",
                 entity_ids=[e["id"], e["id"]],
             )
             a = (await call(mcp, "annotation_create", create_annotation))["result"]
@@ -103,9 +105,10 @@ def test_entity_relation_tools_and_restart(postgres_url: str, tmp_path: Path) ->
                         work_id=work_id,
                         annotation_id=a["id"],
                         expected_version=1,
-                        source_ranges=ranges,
+                        **annotation_fields(ranges),
+                        entity_ids=[e["id"]],
                         tag_ids=[],
-                        note="旧调用省略实体集合",
+                        note="显式保留实体集合",
                     ),
                 )
             )["result"]

@@ -4,9 +4,9 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from annotation_fixtures import annotation_fields
 from starlette.testclient import TestClient
 from test_preparation import import_book
-from test_semantic import DeterministicModel
 
 from novel_lens.app import create_app
 from novel_lens.asset_contracts import AnnotationCreate, AnnotationOut
@@ -47,7 +47,7 @@ def test_web_reading_pages_and_cross_work_reference(
     database: Database, client: TestClient, tmp_path: Path
 ) -> None:
     """原文跨页保真、多处引用保留；同名章节仍通过作品 ID 隔离。"""
-    preparation = PreparationService(database, 1024 * 1024, DeterministicModel())
+    preparation = PreparationService(database, 1024 * 1024)
     book = import_book(preparation, tmp_path, "\n".join(f"正文第{i}段。" for i in range(85)))
     other = import_book(preparation, tmp_path, "不能串入另一作品的原文。")
     reading = ReadingService(database)
@@ -81,7 +81,7 @@ def test_web_reading_pages_and_cross_work_reference(
             AnnotationCreate(
                 request_id=uuid4(),
                 work_id=book.work.id,
-                source_ranges=[span, tail],
+                **annotation_fields([span, tail]),
                 note="完整说明。" * 100,
             )
         )
@@ -110,7 +110,7 @@ def test_web_reading_pages_and_cross_work_reference(
             "annotation_id": str(mark.id),
         },
     ).json()["annotation"]
-    assert len(detail["source_ranges"]) == 2
+    assert len(detail["references"]) == 2
     assert detail["note"] == mark.note
     wrong_work = client.post("/source/read", json=body | {"work_id": str(other.work.id)})
     assert wrong_work.status_code == 404

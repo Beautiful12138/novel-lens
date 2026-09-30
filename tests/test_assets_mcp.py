@@ -6,6 +6,7 @@ from typing import Any
 from uuid import uuid4
 
 import httpx
+from annotation_fixtures import annotation_fields
 from mcp import Client
 from part_fixtures import http_file, mcp_import
 from test_live_http import running_server
@@ -22,7 +23,7 @@ def test_asset_tools_roundtrip_restart_and_errors(postgres_url: str, tmp_path: P
     async def exercise(rest: httpx.Client) -> dict[str, Any]:
         async with Client(str(rest.base_url).rstrip("/") + "/mcp") as mcp:
             tools = (await mcp.list_tools()).tools
-            assert len(tools) == 59
+            assert len(tools) == 56
             assert all(t.output_schema for t in tools)
             by_name = {t.name: t for t in tools}
             assert by_name["annotation_update"].annotations.destructive_hint  # type: ignore[union-attr]
@@ -72,7 +73,7 @@ def test_asset_tools_roundtrip_restart_and_errors(postgres_url: str, tmp_path: P
             create = dict(
                 request_id=str(uuid4()),
                 work_id=work["id"],
-                source_ranges=ranges,
+                **annotation_fields(ranges),
                 tag_ids=[tag["id"]],
                 note=secret_note,
             )
@@ -94,12 +95,17 @@ def test_asset_tools_roundtrip_restart_and_errors(postgres_url: str, tmp_path: P
             update = identifier | dict(
                 request_id=str(uuid4()),
                 expected_version=1,
-                source_ranges=[ranges[1]],
+                **annotation_fields([ranges[1]]),
                 tag_ids=[],
-                note=None,
+                note="修订观察",
+                entity_ids=[],
             )
             changed = (await call(mcp, "annotation_update", update))["result"]
-            assert changed["version"] == 2 and changed["note"] is None and changed["tag_ids"] == []
+            assert (
+                changed["version"] == 2
+                and changed["note"] == "修订观察"
+                and changed["tag_ids"] == []
+            )
             assert (await call(mcp, "annotation_update", update))["result"] == changed
             await call(
                 mcp,
@@ -118,8 +124,9 @@ def test_asset_tools_roundtrip_restart_and_errors(postgres_url: str, tmp_path: P
                 mcp, "asset_write_get", {"request_id": str(uuid4())}, code="WRITE_NOT_COMMITTED"
             )
             invalids = [
-                create | {"source_ranges": []},
-                create | {"source_ranges": [ranges[0], ranges[0]]},
+                create | {"references": []},
+                create | {"references": annotation_fields([ranges[0], ranges[0]])["references"]},
+                create | {"note": None},
                 create | {"note": "\x00"},
                 create | {"note": "　 \n"},
                 create | {"private-unknown": "private-unknown"},
@@ -128,6 +135,12 @@ def test_asset_tools_roundtrip_restart_and_errors(postgres_url: str, tmp_path: P
                 await call(mcp, "annotation_create", invalid, code="INVALID_INPUT")
             await call(
                 mcp, "annotation_update", update | {"expected_version": True}, code="INVALID_INPUT"
+            )
+            await call(
+                mcp,
+                "annotation_update",
+                {k: v for k, v in update.items() if k != "entity_ids"},
+                code="INVALID_INPUT",
             )
             await call(
                 mcp,

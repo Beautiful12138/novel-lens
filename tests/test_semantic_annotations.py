@@ -4,6 +4,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
+from annotation_fixtures import annotation_fields
 from sqlalchemy import text
 from test_semantic import DeterministicModel, build, imported, new_index
 
@@ -47,7 +48,9 @@ def annotation(database: Database, work: UUID, refs: list[SourceRange]) -> Any:
     return (
         AssetService(database)
         .create_annotation(
-            AnnotationCreate(work_id=work, request_id=uuid4(), source_ranges=refs, note="说明")
+            AnnotationCreate(
+                work_id=work, request_id=uuid4(), **annotation_fields(refs), note="说明"
+            )
         )
         .result
     )
@@ -62,7 +65,8 @@ def edit(database: Database, old: Any, refs: list[SourceRange], note: str = "新
                 request_id=uuid4(),
                 annotation_id=old.id,
                 expected_version=old.version,
-                source_ranges=refs,
+                **annotation_fields(refs),
+                entity_ids=[],
                 note=note,
                 tag_ids=[],
             )

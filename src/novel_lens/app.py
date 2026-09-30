@@ -1,6 +1,5 @@
 """HTTP 应用定义，与进程启动和配置读取分离。"""
 
-import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Annotated, Literal
@@ -68,10 +67,8 @@ from novel_lens.query_views import (
     source_search_view,
 )
 from novel_lens.reading import ReadingService
-from novel_lens.reference import ReferenceService
 from novel_lens.reference_contracts import (
     CleanupResult,
-    CompactReferenceResult,
     LibraryBrowse,
     LibraryPage,
     PreparationInspect,
@@ -84,11 +81,8 @@ from novel_lens.reference_contracts import (
     PreparedStatus,
     PrepareFinish,
     PrepareImport,
-    ReferenceQuery,
-    ReferenceResult,
     SourceRead,
 )
-from novel_lens.reference_index import ReferenceIndexer
 from novel_lens.search import SearchService
 from novel_lens.search_contracts import (
     AnnotationSearchHit,
@@ -124,10 +118,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     search = SearchService(database)
     model = EmbeddingClient(settings.embedding_config)
     semantic = SemanticService(database, model)
-    preparation = PreparationService(database, settings.max_file_bytes, model)
-    indexer = ReferenceIndexer(database, model)
-    library = LibraryService(database, model)
-    reference = ReferenceService(database, model)
+    preparation = PreparationService(database, settings.max_file_bytes)
+    library = LibraryService(database)
     mcp = create_mcp(settings, importing, reading, assets, semantic)
     # 只允许当前监听端口；不沿用 SDK 默认允许任意本机端口的通配配置。
     names = {settings.host, "localhost"}
@@ -150,22 +142,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        stop = asyncio.Event()
-        worker = None
-        search_cleaner = None
         try:
             async with mcp.session_manager.run():
-                if settings.database_url is not None and settings.embedding_config is not None:
-                    worker = asyncio.create_task(indexer.run(stop))
-                if settings.database_url is not None:
-                    search_cleaner = asyncio.create_task(reference.sessions.run(stop))
                 yield
         finally:
-            stop.set()
-            if worker is not None:
-                await worker
-            if search_cleaner is not None:
-                await search_cleaner
             await run_in_threadpool(database.close)
 
     app = FastAPI(title="NovelLens", lifespan=lifespan)
@@ -219,10 +199,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/library/browse", summary="分页浏览作品目录、标记与任务")
     def library_browse(request: LibraryBrowse) -> LibraryPage | CompactLibraryPage:
         return library.browse(request)
-
-    @app.post("/reference/query", summary="融合原文与标记线索查询")
-    def reference_query(request: ReferenceQuery) -> ReferenceResult | CompactReferenceResult:
-        return reference.query(request)
 
     @app.post("/source/read", summary="连续读取原文并按需扩展上下文")
     def source_read(request: SourceRead) -> CompactParagraphPage | CompactReadOut | FullSourcePage:

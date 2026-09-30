@@ -135,7 +135,7 @@ def test_all_any_scope_and_keyset(
     assert error.value.code == "WORK_NOT_FOUND"
 
 
-def test_note_update_null_rollback_and_same_time_pagination(
+def test_note_replacement_rollback_and_same_time_pagination(
     database: Database,
     source: tuple[UUID, list[SourceRange]],
 ) -> None:
@@ -178,7 +178,7 @@ def test_note_update_null_rollback_and_same_time_pagination(
         search.annotations(SearchRequest(work_id=source[0], terms=["修订新词"])).items[0].version
         == 2
     )
-    assets.update_annotation(revision(second, note=None))
+    assets.update_annotation(revision(second, note="重新核对后的观察"))
     assert search.annotations(request).items == []
 
 

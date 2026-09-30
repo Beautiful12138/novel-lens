@@ -5,6 +5,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import httpx
+from annotation_fixtures import annotation_fields
 from mcp import Client
 from part_fixtures import http_import
 from test_live_http import running_server
@@ -31,7 +32,7 @@ def test_search_mcp_http_parity(postgres_url: str, tmp_path: Path) -> None:
                 dict(
                     request_id=str(uuid4()),
                     work_id=work["id"],
-                    source_ranges=[ref],
+                    **annotation_fields([ref]),
                     note="以月光呈现留白",
                     tag_ids=[],
                 ),

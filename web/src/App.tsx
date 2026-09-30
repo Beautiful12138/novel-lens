@@ -4,8 +4,7 @@ import type { Page, Work } from './api';
 import { Empty, Pager, Status } from './components';
 import { Reader } from './Reader';
 import { AnnotationLibrary, TagLibrary } from './AssetLibrary';
-import { ReferenceSearch } from './ReferenceSearch';
-import type { SearchJump } from './ReferenceSearch';
+import type { AssetJump } from './AssetLibrary';
 
 function Works({ onNavigate }: { onNavigate: () => void }) {
   const [paging, setPaging] = useState(firstPage);
@@ -46,6 +45,13 @@ function Works({ onNavigate }: { onNavigate: () => void }) {
                     {work.character_count.toLocaleString()} 字
                   </p>
                 </div>
+                <a
+                  className="button"
+                  href={`#view=understanding&work=${work.id}`}
+                  onClick={onNavigate}
+                >
+                  作品认识
+                </a>
                 <a className="button primary" href={`#work=${work.id}`} onClick={onNavigate}>
                   打开阅读
                 </a>
@@ -64,15 +70,18 @@ function Works({ onNavigate }: { onNavigate: () => void }) {
   );
 }
 
-type ViewName = 'works' | 'reader' | 'tags' | 'annotations' | 'search';
+type ViewName = 'works' | 'reader' | 'tags' | 'annotations' | 'understanding';
 function routeFromHash() {
   const locationInfo = parseLocation(location.hash);
   const page = new URLSearchParams(location.hash.slice(1)).get('view');
-  const view: ViewName = locationInfo.work
-    ? 'reader'
-    : page === 'tags' || page === 'annotations' || page === 'search'
-      ? page
-      : 'works';
+  const view: ViewName =
+    page === 'understanding'
+      ? 'understanding'
+      : locationInfo.work
+        ? 'reader'
+        : page === 'tags' || page === 'annotations'
+          ? page
+          : 'works';
   return { ...locationInfo, view };
 }
 
@@ -80,33 +89,37 @@ function routeFromHash() {
 export default function App() {
   const [route, setRoute] = useState(routeFromHash);
   const lastWork = useRef(route);
-  const [jump, setJump] = useState<(SearchJump & { token: number }) | null>(null);
+  const [jump, setJump] = useState<(AssetJump & { token: number }) | null>(null);
   const jumpSequence = useRef(0);
-  const [returnSource, setReturnSource] = useState<'tags' | 'annotations' | 'search' | null>(null);
+  const [returnSource, setReturnSource] = useState<'tags' | 'annotations' | 'understanding' | null>(
+    null,
+  );
   const [visited, setVisited] = useState({
-    search: route.view === 'search',
     tags: route.view === 'tags',
     annotations: route.view === 'annotations',
+    understanding: route.view === 'understanding',
   });
-  if (route.work) lastWork.current = route;
+  const understandingWork = useRef<string | null>(null);
+  if (route.view === 'understanding') understandingWork.current = route.work;
+  if (route.view === 'reader' && route.work) lastWork.current = route;
   useEffect(() => {
     const changed = () => setRoute(routeFromHash());
     window.addEventListener('hashchange', changed);
     return () => window.removeEventListener('hashchange', changed);
   }, []);
   useEffect(() => {
-    if (route.view === 'tags' || route.view === 'annotations' || route.view === 'search')
+    if (route.view === 'tags' || route.view === 'annotations' || route.view === 'understanding')
       setVisited((previous) => ({ ...previous, [route.view]: true }));
     const title = {
-      search: '原文检索',
       works: '作品库',
       reader: '阅读与标注',
       tags: '标签库',
       annotations: '标注库',
+      understanding: '作品认识',
     }[route.view];
     document.title = `NovelLens · ${title}`;
   }, [route.view]);
-  function openAsset(source: 'tags' | 'annotations' | 'search', target: SearchJump) {
+  function openAsset(source: 'tags' | 'annotations' | 'understanding', target: AssetJump) {
     setReturnSource(source);
     setJump({ ...target, token: ++jumpSequence.current });
     const hash = `#work=${target.workId}&section=${target.range.section_id}`;
@@ -143,9 +156,6 @@ export default function App() {
               阅读与标注
             </a>
           )}
-          <a href="#view=search" aria-current={route.view === 'search' ? 'page' : undefined}>
-            原文检索
-          </a>
           <a href="#view=tags" aria-current={route.view === 'tags' ? 'page' : undefined}>
             标签库
           </a>
@@ -154,6 +164,12 @@ export default function App() {
             aria-current={route.view === 'annotations' ? 'page' : undefined}
           >
             标注库
+          </a>
+          <a
+            href="#view=understanding"
+            aria-current={route.view === 'understanding' ? 'page' : undefined}
+          >
+            作品认识
           </a>
         </nav>
         <span className="header-note">原文与分析</span>
@@ -173,25 +189,30 @@ export default function App() {
               active={route.view === 'reader'}
               returnLabel={
                 returnSource
-                  ? `返回${returnSource === 'search' ? '检索结果' : returnSource === 'tags' ? '标签库' : '标注库'}`
+                  ? `返回${returnSource === 'tags' ? '标签库' : returnSource === 'understanding' ? '作品认识' : '标注库'}`
                   : undefined
               }
               onReturn={() => {
                 const source = returnSource;
                 setReturnSource(null);
-                location.hash = `#view=${source}`;
+                location.hash = `#view=${source}${source === 'understanding' && understandingWork.current ? `&work=${understandingWork.current}` : ''}`;
               }}
             />
-          </div>
-        )}
-        {visited.search && (
-          <div hidden={route.view !== 'search'} className="view">
-            <ReferenceSearch onOpen={(target) => openAsset('search', target)} />
           </div>
         )}
         {visited.tags && (
           <div hidden={route.view !== 'tags'} className="view">
             <TagLibrary onOpen={(target) => openAsset('tags', target)} />
+          </div>
+        )}
+        {visited.understanding && (
+          <div hidden={route.view !== 'understanding'} className="view">
+            <AnnotationLibrary
+              key={understandingWork.current || 'all'}
+              understanding
+              workId={understandingWork.current || undefined}
+              onOpen={(target) => openAsset('understanding', target)}
+            />
           </div>
         )}
         {visited.annotations && (

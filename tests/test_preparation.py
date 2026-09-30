@@ -1,15 +1,15 @@
-"""真实 PostgreSQL 验证每批原子性、幂等、自动索引和清理隔离。"""
+"""真实 PostgreSQL 验证每批原子性、幂等、无模型完成和清理隔离。"""
 
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from annotation_fixtures import annotation_fields
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
-from test_semantic import DeterministicModel
 
-from novel_lens.asset_contracts import AnnotationSetStatus, Recovery, TagUpdate
+from novel_lens.asset_contracts import Recovery, TagUpdate
 from novel_lens.assets import AssetService
 from novel_lens.database import Database
 from novel_lens.errors import ServiceError
@@ -25,17 +25,11 @@ from novel_lens.reference_contracts import (
     PrepareStatus,
     TagInput,
 )
-from novel_lens.reference_index import ReferenceIndexer
 
 
 @pytest.fixture
-def model() -> DeterministicModel:
-    return DeterministicModel()
-
-
-@pytest.fixture
-def preparation(database: Database, model: DeterministicModel) -> PreparationService:
-    return PreparationService(database, 1024 * 1024, model)
+def preparation(database: Database) -> PreparationService:
+    return PreparationService(database, 1024 * 1024)
 
 
 def import_book(
@@ -61,18 +55,6 @@ def batch_for(service: PreparationService, book: PreparedImport) -> PrepareBatch
     )
 
 
-def drain(service: PreparationService, book: PreparedImport, model: DeterministicModel) -> None:
-    worker = ReferenceIndexer(service.database, model)
-    for _ in range(80):
-        worker.tick()
-        if (
-            service.status(PrepareStatus(work_id=book.work.id, job_id=book.job.id)).indexes.state
-            == "ready"
-        ):
-            return
-    pytest.fail("自动索引未在有界批次内就绪")
-
-
 def test_atomic_import_replay_and_source_reuse(
     preparation: PreparationService, tmp_path: Path
 ) -> None:
@@ -96,6 +78,29 @@ def test_atomic_import_replay_and_source_reuse(
         PrepareImport(request_id=uuid4(), work_id=book.work.id, file_path=str(path))
     )
     assert duplicate.part.id == book.part.id and duplicate.job.id == book.job.id
+    # 不兼容升级会清理旧任务创建回执，但保留任务身份与目标；再导入不能另建任务。
+    with preparation.database.engine.begin() as conn:
+        deleted = conn.execute(
+            text(
+                "DELETE FROM asset_write_requests WHERE response->'result'->>'work_id'=:work "
+                "AND response->>'operation'='analysis_job_create' "
+                "AND response->'result'->>'id'=:job"
+            ),
+            {"work": str(book.work.id), "job": str(book.job.id)},
+        )
+        assert deleted.rowcount == 1
+    repeated = preparation.import_file(
+        PrepareImport(request_id=uuid4(), work_id=book.work.id, file_path=str(path))
+    )
+    assert repeated.part.id == book.part.id and repeated.job.id == book.job.id
+    with preparation.database.engine.connect() as conn:
+        assert (
+            conn.execute(
+                text("SELECT count(*) FROM analysis_jobs WHERE work_id=:work"),
+                {"work": book.work.id},
+            ).scalar()
+            == 1
+        )
     path.unlink()
     receipt = preparation.receipt(PreparationReceipt(request_id=request.request_id))
     assert isinstance(receipt, PreparedImport) and receipt.part.id == book.part.id
@@ -118,9 +123,9 @@ def test_batch_failure_preserves_previous_and_rolls_back_everything(
     bad = second.model_copy(
         update={
             "marks": [
-                MarkInput(source_ranges=[ref], tags=[tag], note="有效标记"),
+                MarkInput(**annotation_fields([ref]), tags=[tag], note="有效标记"),
                 MarkInput(
-                    source_ranges=[ref.model_copy(update={"end_paragraph_id": uuid4()})],
+                    **annotation_fields([ref.model_copy(update={"end_paragraph_id": uuid4()})]),
                     note="无效引用",
                 ),
             ]
@@ -165,16 +170,15 @@ def test_concurrent_version_and_exact_retry(
 
 
 def test_completed_revision_is_atomic_and_replay_safe(
-    preparation: PreparationService, tmp_path: Path, model: DeterministicModel
+    preparation: PreparationService, tmp_path: Path
 ) -> None:
     book = import_book(preparation, tmp_path)
     batch = batch_for(preparation, book)
     saved = preparation.batch(
         batch.model_copy(
-            update={"marks": [MarkInput(source_ranges=[batch.source_range], note="初稿")]}
+            update={"marks": [MarkInput(**annotation_fields([batch.source_range]), note="初稿")]}
         )
     )
-    drain(preparation, book, model)
     finish = PrepareFinish(
         request_id=uuid4(),
         work_id=book.work.id,
@@ -192,7 +196,7 @@ def test_completed_revision_is_atomic_and_replay_safe(
                 MarkInput(
                     annotation_id=saved.annotations[0].id,
                     expected_version=1,
-                    source_ranges=[batch.source_range],
+                    **annotation_fields([batch.source_range]),
                     note="修订说明",
                 )
             ],
@@ -215,7 +219,6 @@ def test_completed_revision_is_atomic_and_replay_safe(
     assert state.job.status == "running" and state.job.completion is None
     assert state.job.counts == completed.counts and not state.work_ready
     assert preparation.batch(revision).replayed
-    drain(preparation, book, model)
     final = preparation.finish(
         finish.model_copy(update={"request_id": uuid4(), "expected_version": changed.version})
     )
@@ -224,15 +227,14 @@ def test_completed_revision_is_atomic_and_replay_safe(
     assert preparation.status(status_request).work_ready
 
 
-def test_auto_index_finish_updates_and_append_reuses_source(
+def test_finish_updates_and_append_reuses_source_without_embedding(
     preparation: PreparationService,
     tmp_path: Path,
-    model: DeterministicModel,
 ) -> None:
     book = import_book(preparation, tmp_path)
     batch = batch_for(preparation, book)
     mark = MarkInput(
-        source_ranges=[batch.source_range],
+        **annotation_fields([batch.source_range]),
         note="用动作表现迟疑",
         tags=[TagInput(namespace="写法", name=str(uuid4()), description="动作线索")],
     )
@@ -245,16 +247,11 @@ def test_auto_index_finish_updates_and_append_reuses_source(
         recovery=Recovery(next_action="准备完成"),
         note="全部原文已核对",
     )
-    with pytest.raises(ServiceError) as pending:
-        preparation.finish(finish)
-    assert pending.value.code == "PREPARATION_INDEX_PENDING"
-    drain(preparation, book, model)
     assert preparation.finish(finish).job.status == "completed"
     assert preparation.status(PrepareStatus(work_id=book.work.id, job_id=book.job.id)).work_ready
     assert preparation.finish(finish).replayed
     assets = AssetService(preparation.database)
     tag = assets.get_tag(saved.annotations[0].tag_ids[0])
-    before = len(model.calls)
     assets.update_tag(
         TagUpdate(
             request_id=uuid4(),
@@ -265,29 +262,7 @@ def test_auto_index_finish_updates_and_append_reuses_source(
             aliases=[],
         )
     )
-    assert not preparation.status(
-        PrepareStatus(work_id=book.work.id, job_id=book.job.id)
-    ).indexes.clues_ready
-    drain(preparation, book, model)
-    assert len(model.calls) == before + 1  # 只重算线索，原文向量保持。
-    assets.set_annotation_status(
-        AnnotationSetStatus(
-            request_id=uuid4(),
-            work_id=book.work.id,
-            annotation_id=saved.annotations[0].id,
-            expected_version=saved.annotations[0].version,
-            status="withdrawn",
-        )
-    )
-    drain(preparation, book, model)
-    with preparation.database.engine.connect() as conn:
-        assert (
-            conn.execute(
-                text("SELECT count(*) FROM reference_clues WHERE work_id=:w"), {"w": book.work.id}
-            ).scalar()
-            == 0
-        )
-    before = len(model.calls)
+    assert preparation.status(PrepareStatus(work_id=book.work.id, job_id=book.job.id)).work_ready
     path = tmp_path / "append.txt"
     path.write_text("分部：第二卷\n标题：第二章\n新段落", encoding="utf-8")
     appended = preparation.import_file(
@@ -296,118 +271,11 @@ def test_auto_index_finish_updates_and_append_reuses_source(
     assert not preparation.status(
         PrepareStatus(work_id=book.work.id, job_id=book.job.id)
     ).work_ready
-    drain(preparation, appended, model)
-    assert len(model.calls) == before + 1
+    assert appended.part.id != book.part.id
     assert (
         preparation.status(PrepareStatus(work_id=book.work.id, job_id=book.job.id)).job.status
         == "completed"
     )
-
-
-def test_failed_and_stale_vector_batches_can_continue(
-    preparation: PreparationService,
-    tmp_path: Path,
-    model: DeterministicModel,
-) -> None:
-    book = import_book(preparation, tmp_path)
-    drain(preparation, book, model)
-    batch = batch_for(preparation, book)
-    saved = preparation.batch(
-        batch.model_copy(
-            update={
-                "marks": [
-                    MarkInput(source_ranges=[batch.source_range], note=f"线索 {n}")
-                    for n in range(4)
-                ]
-            }
-        )
-    )
-    model.fail = True
-    worker = ReferenceIndexer(preparation.database, model)
-    worker.tick()
-    state = preparation.status(PrepareStatus(work_id=book.work.id, job_id=book.job.id))
-    assert state.indexes.last_error == "EMBEDDING_UNAVAILABLE"
-    assert state.job.counts.processed == 2
-    model.fail = False
-    with preparation.database.engine.begin() as conn:
-        assert (
-            conn.execute(
-                text("SELECT count(*) FROM reference_clues WHERE work_id=:w"), {"w": book.work.id}
-            ).scalar()
-            == 0
-        )
-        conn.execute(
-            text("UPDATE reference_queue SET retry_at=now() WHERE work_id=:w"), {"w": book.work.id}
-        )
-
-    def change_during_inference() -> None:
-        model.during_embed = None
-        preparation.batch(
-            batch.model_copy(
-                update={
-                    "request_id": uuid4(),
-                    "expected_version": saved.version,
-                    "marks": [
-                        MarkInput(
-                            annotation_id=saved.annotations[0].id,
-                            expected_version=saved.annotations[0].version,
-                            source_ranges=[batch.source_range],
-                            note="推理期间修订的线索",
-                        )
-                    ],
-                }
-            )
-        )
-
-    model.during_embed = change_during_inference
-    ReferenceIndexer(preparation.database, model).tick()
-    with preparation.database.engine.connect() as conn:
-        assert (
-            conn.execute(
-                text("SELECT count(*) FROM reference_clues WHERE work_id=:w"), {"w": book.work.id}
-            ).scalar()
-            == 0
-        )
-    drain(preparation, book, model)
-    with preparation.database.engine.connect() as conn:
-        body = conn.execute(
-            text("SELECT body FROM reference_clues WHERE annotation_id=:a"),
-            {"a": saved.annotations[0].id},
-        ).scalar_one()
-    assert "推理期间修订" in body
-
-
-def test_blocked_clue_repair_requeues(
-    preparation: PreparationService, tmp_path: Path, model: DeterministicModel
-) -> None:
-    book = import_book(preparation, tmp_path)
-    drain(preparation, book, model)
-    batch = batch_for(preparation, book)
-    saved = preparation.batch(
-        batch.model_copy(
-            update={"marks": [MarkInput(source_ranges=[batch.source_range], note="长" * 5000)]}
-        )
-    )
-    ReferenceIndexer(preparation.database, model).tick()
-    state = preparation.status(PrepareStatus(work_id=book.work.id, job_id=book.job.id))
-    assert state.indexes.state == "blocked" and not state.work_ready
-    preparation.batch(
-        batch.model_copy(
-            update={
-                "request_id": uuid4(),
-                "expected_version": saved.version,
-                "marks": [
-                    MarkInput(
-                        annotation_id=saved.annotations[0].id,
-                        expected_version=1,
-                        source_ranges=[batch.source_range],
-                        note="修正为简短且有原文依据的线索",
-                    )
-                ],
-            }
-        )
-    )
-    drain(preparation, book, model)
 
 
 def test_cleanup_mid_failure_rolls_back_and_preserves_shared_tag(
@@ -424,7 +292,15 @@ def test_cleanup_mid_failure_rolls_back_and_preserves_shared_tag(
         batch = batch_for(preparation, target)
         preparation.batch(
             batch.model_copy(
-                update={"marks": [MarkInput(source_ranges=[batch.source_range], tags=[tag])]}
+                update={
+                    "marks": [
+                        MarkInput(
+                            **annotation_fields([batch.source_range]),
+                            note="具体表达观察",
+                            tags=[tag],
+                        )
+                    ]
+                }
             )
         )
     request = PrepareCleanup(work_id=book.work.id, confirm_work_name=book.work.name)
@@ -460,7 +336,13 @@ def test_cleanup_scope_and_failure_rollback(
     tag = TagInput(namespace="写法", name=str(uuid4()), description="清理范围验证")
     saved = preparation.batch(
         batch.model_copy(
-            update={"marks": [MarkInput(source_ranges=[batch.source_range], tags=[tag])]}
+            update={
+                "marks": [
+                    MarkInput(
+                        **annotation_fields([batch.source_range]), note="具体表达观察", tags=[tag]
+                    )
+                ]
+            }
         )
     )
     with pytest.raises(ServiceError, match="名称"):
