@@ -1,4 +1,4 @@
-"""同步 Skill 内的写作原则和 HTTP 指南；运行 Skill 无需本脚本。"""
+"""同步包内 HTTP 指南和独立叙述者参考；运行 Skill 无需本脚本。"""
 
 from __future__ import annotations
 
@@ -6,20 +6,20 @@ import argparse
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-COPIES = (
+COPIES = tuple(
     (
-        "docs/中文小说正文写作原则.md",
-        ".agents/skills/chinese-novel-writing/references/writing-principles.md",
-        "<!-- 从写作原则原文同步生成；维护者请修改原文后同步，勿单独编辑副本。 -->\n\n",
-    ),
-    *(
-        (
-            "docs/AI-HTTP使用指南.md",
-            f".agents/skills/{skill}/references/http-api.md",
-            "<!-- 从 docs/AI-HTTP使用指南.md 同步生成；勿单独编辑副本。 -->\n\n",
-        )
-        for skill in ("novel-analysis", "chinese-novel-writing")
-    ),
+        "docs/AI-HTTP使用指南.md",
+        f".agents/skills/{skill}/references/http-api.md",
+        "<!-- 从 docs/AI-HTTP使用指南.md 同步生成；勿单独编辑副本。 -->\n\n",
+    )
+    for skill in ("novel-analysis", "novel-scene-writing")
+) + tuple(
+    (
+        f"docs/{name}.md",
+        f".agents/skills/novel-scene-writing/references/{name}.md",
+        f"<!-- 从 docs/{name}.md 同步生成；勿单独编辑副本。 -->\n\n",
+    )
+    for name in ("龙族叙述者声音分析", "龙族叙述者逐章细读", "叙述者声音原创示例")
 )
 
 

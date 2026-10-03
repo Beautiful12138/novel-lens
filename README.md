@@ -141,7 +141,7 @@ http://127.0.0.1:8000/mcp
 | Skill | 适用任务 |
 | --- | --- |
 | [novel-analysis](.agents/skills/novel-analysis/SKILL.md) | 用户提供待分析 TXT 后自动整理、导入，逐批辨认具体写法并保存比较认识，核对准备完成 |
-| [chinese-novel-writing](.agents/skills/chinese-novel-writing/SKILL.md) | 中文小说创作、续写与修订；默认阅读适用文学原文，按题材主动查阅公开背景资料，让资料参与构思与表达 |
+| [novel-scene-writing](.agents/skills/novel-scene-writing/SKILL.md) | 中文小说构思、创作、续写、修订与写法讨论；必读独立叙述者分析，结合人物、场景与语言方法，按需回读原文范例及原创示例；已连接 NovelLens 时默认通过 MCP／HTTP 阅读适用原文 |
 
 按宿主规则安装**完整 Skill 目录**，包含 `SKILL.md` 与 `references/`。用户无需另行要求检索：写作 Skill 默认选择已连接 NovelLens 中的适用参考，并读懂必要原文。用户明确不用参考、仅文字校对或当前上下文已有足够适用原文时按实际需要执行。原文阅读支持 compact 精简格式，工具示例与参数见[接口与使用](docs/接口与使用.md)。
 
