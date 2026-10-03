@@ -19,7 +19,7 @@ COPIES = tuple(
         f".agents/skills/novel-scene-writing/references/{name}.md",
         f"<!-- 从 docs/{name}.md 同步生成；勿单独编辑副本。 -->\n\n",
     )
-    for name in ("龙族叙述者声音分析", "龙族叙述者逐章细读", "叙述者声音原创示例")
+    for name in ("叙述者立场与讲述", "讲述片段与细读")
 )
 
 
